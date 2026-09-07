@@ -35,7 +35,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.workflow }}-${{ github.ref }}
+  group: release-${{ github.workflow }}-${{ github.ref }}-${{ inputs.abi }}
   cancel-in-progress: false
 
 jobs:
@@ -276,7 +276,7 @@ jobs:
           if [[ -n "$INPUT_DATA_BASE_URL" ]]; then
             export ORG_GRADLE_PROJECT_defaultBaseUrl="$INPUT_DATA_BASE_URL"
           else
-            export ORG_GRADLE_PROJECT_defaultBaseUrl="https://github.com/WarSkyGod/yosuga-no-sora-remake/releases/latest/download/"
+            export ORG_GRADLE_PROJECT_defaultBaseUrl="https://github.com/WarSkyGod/yosuga-no-sora-remake/releases/download/v1.0.6/"
           fi
           chmod +x gradlew
           ./gradlew --no-daemon --stacktrace :app:assembleRelease "-P$ABI"
