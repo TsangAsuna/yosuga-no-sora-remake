@@ -9,7 +9,7 @@ import { preferences } from '@kit.ArkData';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { promptAction, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { unzipTask, copyFileTask, sha256Task, copyUriTask, moveTreeTask, removeTreeTask } from '../workers/DataWorkers';
+import { unzipTask, copyFileTask, sha256Task, copyUriTask, moveTreeTask, mergeTreeTask, removeTreeTask } from '../workers/DataWorkers';
 
 
 /** data-assets.json entry. */
@@ -55,6 +55,21 @@ interface DataManifest {
   releaseTag: string;
   baseUrl: string;
   assets: DataAsset[];
+  /** Total file count of a COMPLETE dataset (all archives combined);
+   *  older releases omit it - the summed per-asset fileCount is used. */
+  fileTotal?: number;
+}
+
+/** In-pack manifest (data-assets.json at the zip ROOT, written by
+ *  package_data_release.py next to the data/ folder). The importer reads
+ *  it after extracting an archive to know WHICH archive it just installed
+ *  and how many more the release contains. */
+interface PackManifest {
+  kind?: string;
+  packIndex: number;
+  packCount: number;
+  fileCount?: number;
+  fileTotal?: number;
 }
 
 
@@ -111,6 +126,9 @@ struct Index {
   private confirming: boolean = false;
   private extractTaskStarted: boolean = false;
   private bgTaskCount: number = 0;
+  // Highest packCount seen in any in-pack manifest of the CURRENT import
+  // round: the completeness gate needs it to name the missing archives.
+  private importPackCount: number = 0;
   @State readyForGame: boolean = false;
   private sandboxFiles: string = '';
   private baseDir: string = '';
@@ -1048,7 +1066,9 @@ struct Index {
     }
     this.progressText = '正在准备游戏数据…';
     this.uiEpoch++;
-    const ok = await this.installUnzipped(unzipTmp);
+    // A download delivers the COMPLETE dataset: replace whatever an older
+    // import/download round left behind (the import flow merges instead).
+    const ok = await this.installUnzipped(unzipTmp, true);
     if (!ok) {
       this.bootState = 2;
       this.progressValue = 0;
@@ -1301,11 +1321,15 @@ struct Index {
    *  - "data/" folder  -> becomes the public loose tree
    *  - "data.xp3"      -> handed to the native extractor
    *  - bare tree       -> the staging dir itself becomes the loose tree
-   *  Returns true when game data is ready. The staging dir lives in the
+   *  With replace=true (the download flow installs a COMPLETE dataset) the
+   *  staging tree REPLACES the data folder. With replace=false (the local
+   *  import flow) the staging tree is MERGED into the existing data folder
+   *  instead: archives arrive one at a time and must accumulate. Returns
+   *  true when a game data payload was found. The staging dir lives in the
    *  sandbox (decompressFile requires sandbox paths) while the data tree
-   *  lives in the public folder - the swap therefore crosses volumes and
+   *  lives in the public folder - the move therefore crosses volumes and
    *  falls back to a copy+delete move when the atomic rename fails. */
-  private async installUnzipped(unzipTmp: string): Promise<boolean> {
+  private async installUnzipped(unzipTmp: string, replace: boolean): Promise<boolean> {
     await this.startExtractTask();
     try {
     const items = this.tryList(unzipTmp);
@@ -1384,7 +1408,14 @@ struct Index {
       this.uiEpoch++;
     };
     if (this.isDir(unzipTmp + '/data')) {
-      await swapIn(unzipTmp + '/data');
+      if (replace) {
+        await swapIn(unzipTmp + '/data');
+      } else {
+        // Accumulative import: MERGE instead of replacing so archives
+        // extracted in earlier rounds survive; the caller runs the
+        // completeness gate (finishImport) afterwards.
+        await this.mergeIn(unzipTmp + '/data');
+      }
       await taskpool.execute(removeTreeTask, unzipTmp);
       return true;
     } else if (items.indexOf('data.xp3') >= 0) {
@@ -1399,12 +1430,266 @@ struct Index {
       await this.extractAndFinalize(this.baseDir + '/data.xp3');
       return true;
     } else if (items.indexOf('startup.tjs') >= 0) {
-      await swapIn(unzipTmp);
+      if (replace) {
+        await swapIn(unzipTmp);
+      } else {
+        await this.mergeIn(unzipTmp);
+      }
       return true;
     }
     return false;
     } finally {
       await this.stopExtractTask();
+    }
+  }
+
+  /** Merge a freshly extracted staging tree into the public data folder
+   *  WITHOUT wiping what previous import rounds already put there
+   *  (accumulative multi-archive imports). Same cross-volume copy path
+   *  and live progress bar as the move inside swapIn. */
+  private async mergeIn(src: string): Promise<void> {
+    this.progressText = '正在合并数据到下载目录…';
+    this.progressValue = 0;
+    this.uiEpoch++;
+    // Pre-create the destination directory on the UI thread: the sharefs
+    // (KaihongOS) rw mount may reject mkdir calls made from the TaskPool
+    // worker, which silently breaks every copy below.
+    try {
+      fs.mkdirSync(this.dataDir, true);
+    } catch (e) {
+      // already exists or the mount is not writable
+    }
+    if (!this.tryDirectAt(this.appDir)) {
+      throw new Error('数据目录不可写：' + this.lastDirectError + '（授权已失效，请重新选择文件夹）');
+    }
+    const progressPath = src + '.move.progress';
+    const movePromise = taskpool.execute(mergeTreeTask, src, this.dataDir);
+    let moved = 0;
+    let total = 0;
+    while (true) {
+      await this.delay(500);
+      const pg = this.tryReadFile(progressPath);
+      if (pg.indexOf('DONE') >= 0) {
+        break;
+      }
+      const parts = pg.trim().split(' ');
+      if (parts.length >= 2) {
+        const pd = Number(parts[0]);
+        const pt = Number(parts[1]);
+        if (isFinite(pd) && isFinite(pt) && pd >= 0 && pt > 0) {
+          moved = pd;
+          total = pt;
+          this.progressValue = Math.floor(moved * 100 / total);
+          this.progressText = '正在合并数据到下载目录：' + moved + ' / ' + total;
+        }
+      }
+    }
+    await movePromise;
+    // Persist any per-file copy failures for diagnosis (the staging dir
+    // is removed right after, so this copy survives).
+    const errText = this.tryReadFile(src + '.move.err');
+    if (errText !== '') {
+      try {
+        const diagFd = fs.openSync(this.sandboxFiles + '/move.diag',
+          fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+        fs.writeSync(diagFd.fd, errText);
+        fs.closeSync(diagFd);
+      } catch (e) {
+        // ignore
+      }
+    }
+    try {
+      fs.unlinkSync(progressPath);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  /** Archive numbers already recorded next to the data folder, parsed
+   *  from the data-assets-<N>.json file names, ascending. */
+  private listImportedPackIndexes(): number[] {
+    const out: number[] = [];
+    const entries = this.tryList(this.baseDir);
+    for (const name of entries) {
+      if (name.startsWith('data-assets-') && name.endsWith('.json')) {
+        const numPart = name.substring('data-assets-'.length,
+          name.length - '.json'.length);
+        const n = Number(numPart);
+        if (Number.isFinite(n) && n > 0 && String(n) === numPart && out.indexOf(n) < 0) {
+          out.push(n);
+        }
+      }
+    }
+    out.sort((a: number, b: number): number => a - b);
+    return out;
+  }
+
+  /** Pick up the in-pack manifest an archive just dropped at
+   *  <stagingRoot>/data-assets.json (the zip ROOT entry, extracted NEXT to
+   *  the data/... tree) and record it as <baseDir>/data-assets-<N>.json.
+   *  Must run right after each unzipTo: a later archive would otherwise
+   *  overwrite the manifest copy inside the shared staging dir. Returns
+   *  the pack index; 0 when the archive carries no manifest (legacy pack /
+   *  single complete pack); -1 for an already-imported pack (duplicate
+   *  copy dropped, user notified). */
+  private async processPackManifest(stagingRoot: string): Promise<number> {
+    const entries = this.tryList(stagingRoot);
+    if (entries.indexOf('data-assets.json') < 0) {
+      return 0;
+    }
+    const src = stagingRoot + '/data-assets.json';
+    let pm: PackManifest | null = null;
+    try {
+      pm = JSON.parse(this.tryReadFile(src)) as PackManifest;
+    } catch (e) {
+      pm = null;
+    }
+    if (pm === null || !(pm.packIndex > 0)) {
+      // Not a valid in-pack manifest: drop it to keep the data tree clean.
+      try {
+        fs.unlinkSync(src);
+      } catch (e) {
+        // ignore
+      }
+      return 0;
+    }
+    const index = Math.floor(pm.packIndex);
+    if (pm.packCount > this.importPackCount) {
+      this.importPackCount = Math.floor(pm.packCount);
+    }
+    const recordName = 'data-assets-' + index + '.json';
+    if (this.tryList(this.baseDir).indexOf(recordName) >= 0) {
+      this.message = '第 ' + index + ' 个压缩包已导入过，请导入其他压缩包';
+      this.uiEpoch++;
+      try {
+        fs.unlinkSync(src);
+      } catch (e) {
+        // ignore
+      }
+      return -1;
+    }
+    const record = this.baseDir + '/' + recordName;
+    try {
+      fs.renameSync(src, record);
+    } catch (e) {
+      // cross-volume (staging sandbox -> public folder): copy + delete
+      try {
+        fs.copyFileSync(src, record);
+        fs.unlinkSync(src);
+      } catch (e2) {
+        // leave the manifest in place; the gate treats this pack as missing
+      }
+    }
+    return index;
+  }
+
+  /** Total number of files a COMPLETE dataset contains, from the fetched
+   *  manifest: its dedicated fileTotal field, or the summed per-asset
+   *  fileCount on older releases. 0 when no manifest is available. */
+  private resolveFileTotal(): number {
+    if (this.manifest !== null) {
+      if (this.manifest.fileTotal !== undefined && this.manifest.fileTotal > 0) {
+        return this.manifest.fileTotal;
+      }
+      let sum = 0;
+      for (const a of this.assets) {
+        sum += a.fileCount;
+      }
+      if (sum > 0) {
+        return sum;
+      }
+    }
+    return 0;
+  }
+
+  /** Recursive file count under a directory: the completeness yardstick
+   *  for legacy archives without an in-pack manifest. */
+  private countFiles(dir: string): number {
+    let entries: string[] = [];
+    try {
+      entries = fs.listFileSync(dir);
+    } catch (e) {
+      return 0;
+    }
+    let n = 0;
+    for (const name of entries) {
+      const child = dir + '/' + name;
+      try {
+        if (fs.statSync(child).isDirectory()) {
+          n += this.countFiles(child);
+        } else {
+          n++;
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+    return n;
+  }
+
+  /** The release's total archive count: the highest packCount seen in
+   *  THIS import round or inside any previously stored record. */
+  private resolveImportPackCount(): number {
+    let best = this.importPackCount;
+    for (const n of this.listImportedPackIndexes()) {
+      try {
+        const pm = JSON.parse(this.tryReadFile(this.baseDir + '/data-assets-' + n + '.json')) as PackManifest;
+        if (pm !== null && pm.packCount > best) {
+          best = Math.floor(pm.packCount);
+        }
+      } catch (e) {
+        // unreadable record: skip
+      }
+    }
+    return best;
+  }
+
+  /** Post-import completeness gate (mirrors Android/iOS). Archives WITH
+   *  an in-pack manifest are tracked through data-assets-<N>.json records
+   *  next to the data folder: the game starts only once EVERY archive is
+   *  in, and the user is told the exact missing numbers otherwise. Legacy
+   *  archives fall back to hasLooseData / the manifest fileTotal. */
+  private async finishImport(): Promise<void> {
+    const imported = this.listImportedPackIndexes();
+    const packCount = this.resolveImportPackCount();
+    if (imported.length > 0 && packCount > 0) {
+      if (imported.length >= packCount) {
+        // Every archive of the release is in: run the normal startup flow.
+        this.message = '';
+        this.finishData();
+        return;
+      }
+      const have: Set<number> = new Set<number>(imported);
+      const missing: number[] = [];
+      for (let n = 1; n <= packCount; n++) {
+        if (!have.has(n)) {
+          missing.push(n);
+        }
+      }
+      this.bootState = 2;
+      this.progressValue = 0;
+      this.uiEpoch++;
+      this.message = '数据包不完整：已导入 ' + imported.length + '/' + packCount
+        + ' 个压缩包，还需导入 ' + missing.length + ' 个，编号：' + missing.join('、');
+      return;
+    }
+    // No in-pack manifests: a legacy single complete pack or an old
+    // multi-part release. A loose startup.tjs + system folder means the
+    // data is usable as-is.
+    if (this.hasLooseData()) {
+      this.message = '';
+      this.finishData();
+      return;
+    }
+    const fileTotal = this.resolveFileTotal();
+    this.bootState = 2;
+    this.progressValue = 0;
+    this.uiEpoch++;
+    if (fileTotal > 0) {
+      const have = this.countFiles(this.dataDir);
+      this.message = '数据包不完整：已解压 ' + have + '/' + fileTotal + ' 个文件，请继续导入其余压缩包';
+    } else {
+      this.message = '数据包不完整（该压缩包不含导入进度信息），请继续导入其余压缩包';
     }
   }
 
@@ -1566,6 +1851,8 @@ struct Index {
     this.bootState = 4;
     this.message = '';
     this.progressText = '正在导入，请稍等';
+    // Fresh completeness state for THIS import round.
+    this.importPackCount = 0;
     const documentPicker = new picker.DocumentViewPicker(getContext(this) as common.UIAbilityContext);
     const cacheDir = this.sandboxFiles + '/cache';
     try {
@@ -1629,6 +1916,12 @@ struct Index {
               // ignore
             }
             zipCount++;
+            // Extract the archive's in-pack manifest RIGHT NOW: a later
+            // archive unzipped into the same staging dir would overwrite
+            // its data-assets.json. The manifest is renamed into
+            // <baseDir>/data-assets-<N>.json (or dropped when this pack
+            // was already imported).
+            await this.processPackManifest(staging);
           } else if (lower.endsWith('.7z') || lower.endsWith('.001') || lower.endsWith('.002')) {
             await this.showNotice('暂不支持 7z 格式', '请选择 zip 压缩包或 data.xp3 文件');
             continue;
@@ -1658,13 +1951,17 @@ struct Index {
       }
       this.progressText = '正在合并安装已添加的 ' + zipCount + ' 个压缩包…';
       this.uiEpoch++;
-      const ok = await this.installUnzipped(staging);
+      // Accumulative install: merge into the existing data folder, then
+      // run the completeness gate (missing archive numbers / startup).
+      const ok = await this.installUnzipped(staging, false);
       if (!ok) {
         this.bootState = 2;
         this.progressValue = 0;
         this.uiEpoch++;
         this.message = '压缩包内容不正确：未找到 data 文件夹或 data.xp3，请重新选择或下载';
         await this.showNotice('数据不完整', '请检查压缩包是否包含 data 文件夹或 data.xp3 文件');
+      } else {
+        await this.finishImport();
       }
       return;
     }
@@ -1744,14 +2041,24 @@ struct Index {
         } catch (e) {
           // ignore
         }
+        // Extract the archive's in-pack manifest RIGHT NOW: archives
+        // unzipped into the same staging dir would overwrite each other's
+        // data-assets.json. It is renamed into
+        // <baseDir>/data-assets-<N>.json (or dropped when this pack was
+        // already imported).
+        await this.processPackManifest(unzipTmp);
       }
-      const ok = await this.installUnzipped(unzipTmp);
+      // Accumulative install: merge into the existing data folder, then
+      // run the completeness gate (missing archive numbers / startup).
+      const ok = await this.installUnzipped(unzipTmp, false);
       if (!ok) {
         this.bootState = 2;
         this.progressValue = 0;
         this.uiEpoch++;
         this.message = '压缩包内容不正确：未找到 data 文件夹或 data.xp3，请重新选择或下载';
         await this.showNotice('数据不完整', '请检查压缩包是否包含 data 文件夹或 data.xp3 文件');
+      } else {
+        await this.finishImport();
       }
       return;
     }

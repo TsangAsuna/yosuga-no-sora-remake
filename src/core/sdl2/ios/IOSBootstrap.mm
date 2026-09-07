@@ -174,6 +174,90 @@ static void ClearDataComplete(void)
     RemoveTree([DataRootPath() stringByAppendingPathComponent:@".complete"]);
 }
 
+/* ------------------------------------------------------------------ */
+/* In-pack manifest records (mirrors Android / OHOS importers)          */
+/* ------------------------------------------------------------------ */
+
+/* Every data archive ships its own data-assets.json at the zip ROOT
+ * (next to the data/ folder), written by package_data_release.py:
+ *   {"kind":"data-pack","packIndex":N,"packCount":M,
+ *    "fileCount":<files in this archive>,"fileTotal":<complete dataset>}
+ * After extracting an archive the importer renames that copy to
+ * data-assets-<packIndex>.json NEXT TO the data dir, so the completeness
+ * gate can name the exact archive numbers still missing. */
+
+static NSString *PackRecordPath(NSInteger index)
+{
+    return [DataRootPath() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"data-assets-%ld.json", (long)index]];
+}
+
+/* Archive numbers already recorded next to the data dir, ascending. */
+static NSArray<NSNumber *> *ListImportedPackIndexes(void)
+{
+    NSMutableArray<NSNumber *> *out = [NSMutableArray array];
+    NSArray *items = [[NSFileManager defaultManager]
+        contentsOfDirectoryAtPath:DataRootPath() error:nil];
+    for (NSString *name in items)
+    {
+        if (![name hasPrefix:@"data-assets-"] || ![name hasSuffix:@".json"])
+            continue;
+        NSString *numPart = [name substringWithRange:
+            NSMakeRange((NSUInteger)strlen("data-assets-"),
+                name.length - strlen("data-assets-") - strlen(".json"))];
+        NSNumberFormatter *fmt = [[NSNumberFormatter alloc] init];
+        fmt.numberStyle = NSNumberFormatterNoStyle;
+        fmt.usesGroupingSeparator = NO;
+        NSNumber *n = [fmt numberFromString:numPart];
+        if (n && n.integerValue > 0 &&
+            [n.stringValue isEqualToString:numPart] &&
+            ![out containsObject:n])
+            [out addObject:n];
+    }
+    [out sortUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) {
+        return [a compare:b];
+    }];
+    return out;
+}
+
+/* The release's total archive count: the highest packCount seen in THIS
+ * import round or inside any previously stored record. */
+static NSInteger ResolveImportPackCount(NSInteger observed)
+{
+    NSInteger best = observed;
+    for (NSNumber *n in ListImportedPackIndexes())
+    {
+        NSDictionary *pm = [NSJSONSerialization
+            JSONObjectWithData:[NSData dataWithContentsOfFile:PackRecordPath(n.integerValue)]
+            options:0 error:nil];
+        NSNumber *c = [pm isKindOfClass:NSDictionary.class] ? pm[@"packCount"] : nil;
+        if ([c isKindOfClass:NSNumber.class] && c.integerValue > best)
+            best = c.integerValue;
+    }
+    return best;
+}
+
+/* Recursive file count under a directory: the completeness yardstick for
+ * legacy archives without an in-pack manifest. */
+static long long CountFilesInDir(NSString *dir)
+{
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *items = [fm contentsOfDirectoryAtPath:dir error:nil];
+    if (!items)
+        return 0;
+    long long n = 0;
+    for (NSString *item in items)
+    {
+        NSString *child = [dir stringByAppendingPathComponent:item];
+        BOOL isDir = NO;
+        if ([fm fileExistsAtPath:child isDirectory:&isDir] && isDir)
+            n += CountFilesInDir(child);
+        else
+            n++;
+    }
+    return n;
+}
+
 /* Merge the staging tree into <root>/data: entries under staging/data are
  * used when present (the CI packer prefixes everything with data/). The
  * prefix check must be structural: startup.tjs lives only in the FIRST
@@ -307,6 +391,9 @@ static NSString *HexString(const unsigned char *bytes, size_t len)
     UIBackgroundTaskIdentifier _bgTask;
     NSInteger _selectedProxy;
     NSInteger _activeAction;
+    /* Highest packCount seen in any in-pack manifest of the CURRENT import
+     * round: the completeness gate needs it to name the missing archives. */
+    NSInteger _importPackCount;
 }
 
 - (BOOL)prefersStatusBarHidden { return YES; }
@@ -1197,6 +1284,166 @@ static int ExtractProgressCb(void *ctx, int done, int total, const char *nameUtf
     return ok;
 }
 
+/* Read the in-pack manifest an archive just dropped (zip-root
+ * data-assets.json) and record it as data-assets-<N>.json next to the
+ * data dir. A bare-tree merge moves the staging root INTO the data dir,
+ * so the manifest copy may live there instead. Runs on the import
+ * worker thread; UI updates hop to the main queue. */
+- (void)processPackManifestInStaging:(NSString *)staging
+{
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *src = [staging stringByAppendingPathComponent:@"data-assets.json"];
+    BOOL isDir = NO;
+    if (![fm fileExistsAtPath:src isDirectory:&isDir] || isDir)
+    {
+        /* not in the staging root - a bare-tree merge moved it into the
+         * data dir next to startup.tjs */
+        src = [DataDirPath() stringByAppendingPathComponent:@"data-assets.json"];
+        isDir = NO;
+        if (![fm fileExistsAtPath:src isDirectory:&isDir] || isDir)
+            return; /* legacy archive: no in-pack manifest */
+    }
+    NSDictionary *pm = [NSJSONSerialization
+        JSONObjectWithData:[NSData dataWithContentsOfFile:src]
+        options:0 error:nil];
+    NSInteger index = 0;
+    NSInteger count = 0;
+    if ([pm isKindOfClass:NSDictionary.class])
+    {
+        NSNumber *i = pm[@"packIndex"];
+        NSNumber *c = pm[@"packCount"];
+        if ([i isKindOfClass:NSNumber.class])
+            index = i.integerValue;
+        if ([c isKindOfClass:NSNumber.class])
+            count = c.integerValue;
+    }
+    if (index < 1)
+    {
+        RemoveTree(src); /* not a valid in-pack manifest: drop it */
+        return;
+    }
+    if (count > _importPackCount)
+        _importPackCount = count;
+    NSString *record = PackRecordPath(index);
+    if ([fm fileExistsAtPath:record])
+    {
+        IosLog([NSString stringWithFormat:@"pack %ld already imported", (long)index]);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self setMessage:[NSString stringWithFormat:
+                @"第 %ld 个压缩包已导入过，请导入其他压缩包", (long)index]];
+        });
+        RemoveTree(src); /* already recorded: drop the duplicate copy */
+        return;
+    }
+    RemoveTree(record);
+    NSError *cpErr = nil;
+    if (![fm copyItemAtPath:src toPath:record error:&cpErr])
+    {
+        IosLog([NSString stringWithFormat:@"pack manifest record failed: %@",
+            cpErr.localizedDescription]);
+        return; /* the gate treats this pack as missing; files stay merged */
+    }
+    RemoveTree(src);
+    IosLog([NSString stringWithFormat:@"pack %ld recorded (count=%ld)",
+        (long)index, (long)count]);
+}
+
+/* Total file count of a COMPLETE dataset, from the release manifest
+ * (its dedicated fileTotal field, or the summed per-asset fileCount on
+ * older releases). 0 when unavailable (offline etc.). */
+- (void)fetchFileTotal:(void (^)(long long))completion
+{
+    NSString *baseUrl = [self effectiveBaseUrl];
+    NSString *originalManifestUrl =
+        [baseUrl stringByAppendingString:@"data-assets.json"];
+    NSString *proxy = [self proxyPrefix];
+    NSString *manifestUrl = proxy.length > 0
+        ? [proxy stringByAppendingString:originalManifestUrl]
+        : originalManifestUrl;
+    [self fetchJson:manifestUrl completion:^(id json, NSString *error) {
+        if (!json || error.length > 0)
+        {
+            completion(0);
+            return;
+        }
+        NSNumber *total = json[@"fileTotal"];
+        if ([total isKindOfClass:NSNumber.class] && total.longLongValue > 0)
+        {
+            completion(total.longLongValue);
+            return;
+        }
+        long long sum = 0;
+        NSArray *assets = json[@"assets"];
+        for (NSDictionary *a in assets)
+        {
+            NSNumber *fc = a[@"fileCount"];
+            if ([fc isKindOfClass:NSNumber.class])
+                sum += fc.longLongValue;
+        }
+        completion(sum);
+    }];
+}
+
+/* Post-import completeness gate (mirrors Android / OHOS). Archives WITH
+ * an in-pack manifest are tracked through data-assets-<N>.json records
+ * next to the data dir: the game starts only once EVERY archive is in,
+ * and the user is told the exact missing numbers otherwise. Legacy
+ * archives fall back to startup.tjs presence and, best-effort, the
+ * release manifest's fileTotal vs the extracted file count. */
+- (void)finishImport
+{
+    NSArray<NSNumber *> *imported = ListImportedPackIndexes();
+    NSInteger packCount = ResolveImportPackCount(_importPackCount);
+    if (imported.count > 0 && packCount > 0)
+    {
+        if (imported.count >= (NSUInteger)packCount)
+        {
+            /* Every archive of the release is in: normal startup flow. */
+            [self dataInstalled];
+            return;
+        }
+        NSMutableString *missing = [NSMutableString string];
+        for (NSInteger n = 1; n <= packCount; n++)
+        {
+            if (![imported containsObject:@(n)])
+            {
+                if (missing.length > 0)
+                    [missing appendString:@"、"];
+                [missing appendFormat:@"%ld", (long)n];
+            }
+        }
+        [self setMessage:[NSString stringWithFormat:
+            @"数据包不完整：已导入 %lu/%ld 个压缩包，还需导入 %ld 个，编号：%@",
+            (unsigned long)imported.count, (long)packCount,
+            (long)(packCount - (NSInteger)imported.count), missing]];
+        [self setBusy:NO];
+        return;
+    }
+    /* No in-pack manifests: a legacy single complete pack or an old
+     * multi-part release. startup.tjs means the data is usable as-is. */
+    if ([[NSFileManager defaultManager] fileExistsAtPath:
+            [DataDirPath() stringByAppendingPathComponent:@"startup.tjs"]])
+    {
+        [self dataInstalled];
+        return;
+    }
+    [self setProgressText:@"正在核对数据完整性…" progress:0];
+    [self fetchFileTotal:^(long long fileTotal) {
+        if (fileTotal > 0)
+        {
+            long long have = CountFilesInDir(DataDirPath());
+            [self setMessage:[NSString stringWithFormat:
+                @"数据包不完整：已解压 %lld/%lld 个文件，请继续导入其余压缩包",
+                have, fileTotal]];
+        }
+        else
+        {
+            [self setMessage:@"数据包不完整（该压缩包不含导入进度信息），请继续导入其余压缩包"];
+        }
+        [self setBusy:NO];
+    }];
+}
+
 - (void)dataInstalled
 {
     MarkDataComplete();
@@ -1289,8 +1536,13 @@ static int ExtractProgressCb(void *ctx, int done, int total, const char *nameUtf
     [self setBusy:YES];
     [self setProgressText:@"正在导入，请稍等" progress:0];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        RemoveTree(DataDirPath()); /* whole-tree swap, replaces ANY previous data */
+        /* The release ships as SEVERAL independent archives, so imports
+         * must ACCUMULATE: never wipe the data dir here (the merge below
+         * overlays the new archive onto whatever earlier rounds brought).
+         * Only the completion marker is cleared until the completeness
+         * gate decides the data set is whole. */
         ClearDataComplete();
+        self->_importPackCount = 0;
         [self importArchives:urls];
     });
 }
@@ -1359,6 +1611,26 @@ static int ExtractProgressCb(void *ctx, int done, int total, const char *nameUtf
         BOOL ok = (rc == 0) && [self mergeOnMain:staging err:&mergeErr];
         IosLog([NSString stringWithFormat:@"import extract %@ rc=%d cErr=%@ mergeErr=%@",
             item[@"name"], rc, cErr ?: @"", mergeErr ?: @""]);
+        if (ok && [path.lowercaseString hasSuffix:@".xp3"])
+        {
+            /* data.xp3 is a COMPLETE dataset: finish right away instead of
+             * running the completeness gate (stale records from earlier
+             * multi-zip rounds would otherwise report missing packs). */
+            RemoveTree(staging);
+            RemoveTree(path);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self dataInstalled];
+            });
+            return;
+        }
+        if (ok)
+        {
+            /* Record the archive's in-pack manifest (zip-root
+             * data-assets.json) as data-assets-<N>.json next to the data
+             * dir, BEFORE the staging tree is removed. Re-imported packs
+             * only notify the user. */
+            [self processPackManifestInStaging:staging];
+        }
         RemoveTree(staging);
         RemoveTree(path);
         if (!ok)
@@ -1373,7 +1645,7 @@ static int ExtractProgressCb(void *ctx, int done, int total, const char *nameUtf
         }
     }
     dispatch_async(dispatch_get_main_queue(), ^{
-        [self dataInstalled];
+        [self finishImport];
     });
 }
 
