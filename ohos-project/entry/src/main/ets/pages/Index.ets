@@ -97,6 +97,13 @@ struct Index {
   @State bootState: number = 0;
   @State progressText: string = '';
   @State progressValue: number = 0;
+  /* The game surface keeps a strict 16:9 canvas centered inside the window,
+   * with the leftover space filled black (HarmonyOS PC screens are mostly
+   * 3:2; stretching the canvas over the full window would distort the
+   * picture). These are the fitted canvas sizes in vp, recomputed from the
+   * window stack size on every onAreaChange. */
+  @State gameW: number = 1280;
+  @State gameH: number = 720;
   // Second (extract) progress bar: visible while an archive decompression
   // runs (download pipeline / xp3 unpack), hidden again once it finishes.
   @State extractText: string = '';
@@ -2522,6 +2529,22 @@ struct Index {
     this.hoverProxy = isHover ? proxy : (this.hoverProxy === proxy ? 0 : this.hoverProxy);
   }
 
+  /* Fit the largest 16:9 rectangle inside the given window size and store
+   * it as the game/bootstrap canvas. Every page stack runs this from its
+   * onAreaChange so all pages share the exact same fitted canvas. */
+  private fitGameCanvas(stageW: number, stageH: number): void {
+    if (stageW > 0 && stageH > 0) {
+      let gw: number = stageW;
+      let gh: number = stageW * 9 / 16;
+      if (gh > stageH) {
+        gh = stageH;
+        gw = stageH * 16 / 9;
+      }
+      this.gameW = Math.floor(gw);
+      this.gameH = Math.floor(gh);
+    }
+  }
+
   build() {
     Stack({ alignContent: Alignment.Center }) {
       // Title background image shipped inside the HAP (rawfile); only on
@@ -2589,10 +2612,11 @@ struct Index {
                 this.log('onLoad exception: ' + JSON.stringify(e));
               }
             })
-            // Full-screen height with 16:9 aspect: the video fills the
-            // screen top-to-bottom and letterboxes on the sides only.
-            .height('100%')
-            .aspectRatio(16 / 9)
+            // Strict 16:9 canvas fitted inside the window (letterboxed on
+            // the sides on 3:2 HarmonyOS PC / tablet screens instead of
+            // being stretched edge to edge).
+            .width(this.gameW)
+            .height(this.gameH)
             // Report the real component size to the engine: the native
             // OnSurfaceChanged callback never fires on this system, so
             // without this the SDL window size stays at the fallback and
@@ -2642,8 +2666,10 @@ struct Index {
                   this.log('video onLoad exception: ' + JSON.stringify(e));
                 }
               })
-              .height('100%')
-              .aspectRatio(16 / 9)
+              // Same fitted 16:9 canvas as the game surface (16:9 movies
+              // then exactly cover the game picture).
+              .width(this.gameW)
+              .height(this.gameH)
               .zIndex(3)
             }
             // No .onTouch here: libace_compatible crashes the UI thread while
@@ -2654,10 +2680,10 @@ struct Index {
           // itself never receives them (libace_compatible crashes processing
           // XComponent touches). Forward to the SDL backend via napi.
           Column()
-            // Same size as the XComponent so overlay vp coords map directly
-            // onto the SDL window coordinate space.
-            .height('100%')
-            .aspectRatio(16 / 9)
+            // Same fitted 16:9 canvas as the XComponent so overlay vp coords
+            // map directly onto the SDL window coordinate space.
+            .width(this.gameW)
+            .height(this.gameH)
             .backgroundColor('#00000000')
             .zIndex(4)
             .onTouch((event: TouchEvent) => {
@@ -2726,6 +2752,20 @@ struct Index {
         }
         .width('100%')
         .height('100%')
+        // Letterbox: black bars around the fitted 16:9 canvas.
+        .backgroundColor('#000000')
+        .onAreaChange((oldStage: Area, newStage: Area) => {
+          // Fit the largest 16:9 rectangle inside the window: HarmonyOS PC
+          // screens are mostly 3:2, so a plain height('100%') +
+          // aspectRatio(16/9) would overflow horizontally and get clamped
+          // back to a distorted full-window canvas.
+          try {
+            this.fitGameCanvas(newStage.width as number,
+              newStage.height as number);
+          } catch (eFit) {
+            // keep the previous fitted size
+          }
+        })
       } else if (this.bootState === 2) {
         // The setup controls use the same 16:9 canvas as Background.png.
         // Percent positions are relative to that canvas, so controls stay
@@ -2850,7 +2890,13 @@ struct Index {
               this.importLocal();
             })
         }
-        .height('100%').aspectRatio(16 / 9)
+        .width(this.gameW)
+        .height(this.gameH)
+        .backgroundColor('#000000')
+        .onAreaChange((oldStage: Area, newStage: Area) => {
+          this.fitGameCanvas(newStage.width as number,
+            newStage.height as number);
+        })
       } else if (this.bootState === 3 || this.bootState === 4 || this.bootState === 7) {
         // Keep the same artwork during download/import and overlay the live
         // progress control on the supplied center track. This makes the
@@ -2930,7 +2976,13 @@ struct Index {
             .fontSize(18).fontColor(Color.White).maxLines(3)
             .textAlign(TextAlign.Center)
         }
-        .height('100%').aspectRatio(16 / 9)
+        .width(this.gameW)
+        .height(this.gameH)
+        .backgroundColor('#000000')
+        .onAreaChange((oldStage: Area, newStage: Area) => {
+          this.fitGameCanvas(newStage.width as number,
+            newStage.height as number);
+        })
       } else {
         Column({ space: 14 }) {
           Text('需要授权').fontSize(18).fontColor(Color.White)

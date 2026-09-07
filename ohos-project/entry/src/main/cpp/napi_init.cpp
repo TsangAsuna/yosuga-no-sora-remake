@@ -339,17 +339,18 @@ static napi_value IsEngineRunning(napi_env env, napi_callback_info info)
 
 /* pollFullscreen(): the pending fullscreen/windowed switch requested by the
  * game settings menu (HarmonyOS PC / 2-in-1 tablets). Returns -1 (none),
- * 0 (windowed) or 1 (fullscreen); the shell applies window.setWindowFullscreen
- * and acknowledges with ackFullscreen(state). */
+ * 0 (windowed) or 1 (fullscreen); the shell applies window.setFullScreen
+ * and acknowledges with ackFullscreen(state). The state lives in
+ * libkrkrsdl2.so (SDL_ohosvideo.c); see sdl_ohos_bridge.h. */
 static napi_value PollFullscreen(napi_env env, napi_callback_info info)
 {
 	(void)info;
 	napi_value result;
-	napi_create_int32(env, OHOS_Entry_PollFullscreenRequest(), &result);
+	napi_create_int32(env, SDL_OHOS_PollFullscreenRequest(), &result);
 	return result;
 }
 
-/* ackFullscreen(applied): confirm the shell applied window.setWindowFullscreen
+/* ackFullscreen(applied): confirm the shell applied window.setFullScreen
  * (applied = 0 windowed / 1 fullscreen); clears the pending request and
  * records the state that backs the engine's GetFullScreenMode. */
 static napi_value AckFullscreen(napi_env env, napi_callback_info info)
@@ -362,7 +363,7 @@ static napi_value AckFullscreen(napi_env env, napi_callback_info info)
 	{
 		return nullptr;
 	}
-	OHOS_Entry_AckFullscreen(applied);
+	SDL_OHOS_AckFullscreen(applied);
 	return nullptr;
 }
 

@@ -157,12 +157,11 @@ uint64_t g_surface_height = 0;
  * size itself stays at the game resolution (1920x1080). */
 uint64_t g_physical_width = 0;
 uint64_t g_physical_height = 0;
-/* Fullscreen/windowed switch requested by the game settings menu (TJS
- * Window.fullScreen). -1 = no pending request, 0 = windowed, 1 = fullscreen;
- * the ArkTS shell polls pollFullscreen(), applies window.setWindowFullscreen
- * and acknowledges via ackFullscreen (HarmonyOS PC / 2-in-1 tablets). */
-std::atomic<int> g_fullscreen_request{-1};
-std::atomic<int> g_fullscreen_state{-1};
+/* Fullscreen/windowed switch state (the game settings menu, TJS
+ * Window.fullScreen) lives in SDL_ohosvideo.c inside libkrkrsdl2.so so the
+ * engine resolves the bridge within its own .so; this module reaches it via
+ * the exported SDL_OHOS_PollFullscreenRequest / SDL_OHOS_AckFullscreen
+ * dynamic symbols (see napi_init.cpp pollFullscreen/ackFullscreen). */
 bool g_window_ready = false;
 
 bool g_engine_started = false;
@@ -711,39 +710,6 @@ extern "C" int SDL_OHOS_GetPhysicalSize(int *width, int *height)
 extern "C" int SDL_OHOS_IsVideoPlaying(void)
 {
 	return g_ohos_player.IsPlaying() ? 1 : 0;
-}
-
-/* sdl_ohos_bridge.h: fullscreen/windowed switch requested by the game menu.
- * The engine thread calls this; the ArkTS shell picks the request up from
- * its 100 ms poll and applies window.setWindowFullscreen(). */
-extern "C" void SDL_OHOS_SetAppFullscreen(int fullscreen)
-{
-	g_fullscreen_request.store(fullscreen ? 1 : 0, std::memory_order_release);
-}
-
-/* sdl_ohos_bridge.h: current applied state (backs GetFullScreenMode so the
- * settings menu checkbox reflects reality). */
-extern "C" int SDL_OHOS_GetAppFullscreenState(void)
-{
-	return g_fullscreen_state.load(std::memory_order_acquire);
-}
-
-/* Polled by the ArkTS shell: the pending fullscreen request, or -1. */
-int OHOS_Entry_PollFullscreenRequest(void)
-{
-	return g_fullscreen_request.load(std::memory_order_acquire);
-}
-
-/* Called by the ArkTS shell after window.setWindowFullscreen() completed:
- * record the applied state and clear the pending request - but only when it
- * still matches what the shell applied, so a newer request written in
- * between (user flipped the switch again) is not lost. */
-void OHOS_Entry_AckFullscreen(int applied)
-{
-	g_fullscreen_state.store(applied, std::memory_order_release);
-	int expected = applied;
-	g_fullscreen_request.compare_exchange_strong(expected, -1,
-		std::memory_order_release, std::memory_order_acquire);
 }
 
 /* Polled by the ArkTS shell to mount the video XComponent. True while the

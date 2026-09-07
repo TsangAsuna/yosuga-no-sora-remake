@@ -552,12 +552,51 @@ static void OHOS_SetWindowFullscreen(_THIS, SDL_Window *window, SDL_VideoDisplay
 	(void)window;
 	(void)display;
 	/* The XComponent surface is managed by the ArkTS shell: forward the
-	 * switch to it (the 100 ms poll applies window.setWindowFullscreen,
-	 * which toggles the OS fullscreen state on HarmonyOS PC / 2-in-1
-	 * tablets). The SDL window keeps its logical size either way - the
-	 * compositor stretches the buffer into the 16:9 surface. */
+	 * switch to it (the 100 ms poll applies window.setFullScreen, which
+	 * toggles the OS fullscreen state on HarmonyOS PC / 2-in-1 tablets).
+	 * The SDL window keeps its logical size either way - the compositor
+	 * stretches the buffer into the 16:9 surface. */
 	if (SDL_OHOS_SetAppFullscreen)
 	{
 		SDL_OHOS_SetAppFullscreen(fullscreen ? 1 : 0);
 	}
+}
+
+/* --- Fullscreen/windowed request state ----------------------------------- */
+/* Lives in this file (libkrkrsdl2.so) so the engine's SDLApplication.cpp and
+ * this video driver resolve the bridge within their own .so at LINK time -
+ * the previous placement in libentry.so relied on a run-time weak binding
+ * across two .so files, which made the game-menu fullscreen switch a no-op
+ * on some devices. libentry.so reaches these through the exported dynamic
+ * symbols (napi pollFullscreen/ackFullscreen). */
+#include <stdatomic.h>
+
+static atomic_int g_ohos_fullscreen_request = -1; /* -1 none / 0 windowed / 1 fullscreen */
+static atomic_int g_ohos_fullscreen_state = -1;   /* -1 unknown / 0 windowed / 1 fullscreen */
+
+void SDL_OHOS_SetAppFullscreen(int fullscreen)
+{
+	atomic_store_explicit(&g_ohos_fullscreen_request, fullscreen ? 1 : 0,
+		memory_order_release);
+}
+
+int SDL_OHOS_GetAppFullscreenState(void)
+{
+	return atomic_load_explicit(&g_ohos_fullscreen_state, memory_order_acquire);
+}
+
+int SDL_OHOS_PollFullscreenRequest(void)
+{
+	return atomic_load_explicit(&g_ohos_fullscreen_request, memory_order_acquire);
+}
+
+void SDL_OHOS_AckFullscreen(int applied)
+{
+	atomic_store_explicit(&g_ohos_fullscreen_state, applied, memory_order_release);
+	/* Clear the pending request only when it still matches what the shell
+	 * applied, so a newer request written in between (the user flipped the
+	 * switch again) is not lost. */
+	int expected = applied;
+	atomic_compare_exchange_strong_explicit(&g_ohos_fullscreen_request,
+		&expected, -1, memory_order_release, memory_order_acquire);
 }

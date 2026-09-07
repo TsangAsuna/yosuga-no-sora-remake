@@ -53,13 +53,6 @@ int OHOS_Entry_IsEngineRunning(void);
  * on this system), so the SDL window size matches the real surface. */
 void OHOS_Entry_SetSurfaceSize(uint64_t width, uint64_t height);
 
-/* Fullscreen/windowed switch requested by the game settings menu. Poll
- * returns the pending request (-1 = none, 0 = windowed, 1 = fullscreen);
- * after applying window.setWindowFullscreen() the shell acknowledges with
- * the applied state, which also backs the engine's GetFullScreenMode. */
-int OHOS_Entry_PollFullscreenRequest(void);
-void OHOS_Entry_AckFullscreen(int applied);
-
 /* Attach the page XComponent. Registers surface and touch callbacks so the
  * SDL video driver can obtain its native window. */
 void OHOS_Entry_AttachXComponent(void *component);

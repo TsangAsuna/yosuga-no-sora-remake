@@ -4,9 +4,13 @@
  * vendored SDL2 OpenHarmony backend.
  *
  * The declarations in this header are implemented in two places:
+ *   - SDL_ohosvideo.c         (libkrkrsdl2.so): touch event delivery AND the
+ *     fullscreen/windowed request state (the engine's SDLApplication.cpp and
+ *     its SDL video driver resolve those within their own .so at link time;
+ *     libentry.so reaches them through the exported dynamic symbols).
  *   - krkrsdl2_ohos_entry.cpp  (libentry.so): files directory, XComponent
  *     surface state and the native window wait/query helpers.
- *   - SDL_ohosevents.c         (libSDL2): touch event delivery.
+ *   - SDL_ohosevents.c         (libSDL2 and libentry): touch event plumbing.
  *
  * tools/setup_ohos_project.py copies this header into the vendored SDL tree
  * so both sides compile against identical declarations.
@@ -103,12 +107,23 @@ OHOS_EXPORT void SDL_OHOS_OnKeyEvent(int down, int keycode) __attribute__((weak)
  * windowed mode (HarmonyOS PC / 2-in-1 tablets - the game settings menu
  * maps its fullscreen/windowed buttons onto this). The request is stored
  * here and picked up by the shell's 100 ms poll (pollFullscreen /
- * ackFullscreen NAPI functions); fullscreen ? 1 : 0. */
+ * ackFullscreen NAPI functions); fullscreen ? 1 : 0.
+ * Implemented in SDL_ohosvideo.c (libkrkrsdl2.so) so the engine and its
+ * SDL video driver resolve it within their own .so at link time. */
 OHOS_EXPORT void SDL_OHOS_SetAppFullscreen(int fullscreen) __attribute__((weak));
 
 /* Current applied fullscreen state: -1 = unknown (never switched yet),
  * 0 = windowed, 1 = fullscreen. Backs the engine's GetFullScreenMode. */
 OHOS_EXPORT int SDL_OHOS_GetAppFullscreenState(void) __attribute__((weak));
+
+/* Polled by the ArkTS shell (libentry.so): the pending fullscreen request,
+ * or -1 when there is none. Implemented in SDL_ohosvideo.c. */
+OHOS_EXPORT int SDL_OHOS_PollFullscreenRequest(void) __attribute__((weak));
+
+/* Acknowledge the shell applied the requested fullscreen state (0 windowed /
+ * 1 fullscreen): records the applied state and clears the pending request
+ * with a CAS so a newer request written in between is not lost. */
+OHOS_EXPORT void SDL_OHOS_AckFullscreen(int applied) __attribute__((weak));
 
 #ifdef __cplusplus
 }
