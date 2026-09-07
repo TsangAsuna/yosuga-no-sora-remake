@@ -97,13 +97,9 @@ struct Index {
   @State bootState: number = 0;
   @State progressText: string = '';
   @State progressValue: number = 0;
-  /* The game surface keeps a strict 16:9 canvas centered inside the window,
-   * with the leftover space filled black (HarmonyOS PC screens are mostly
-   * 3:2; stretching the canvas over the full window would distort the
-   * picture). These are the fitted canvas sizes in vp, recomputed from the
-   * window stack size on every onAreaChange. */
-  @State gameW: number = 1280;
-  @State gameH: number = 720;
+  /* Last value of pollFullscreen written to the diag log, so the 10 Hz poll
+   * only logs when the request actually changes. */
+  private lastFsLog: number = -99;
   // Second (extract) progress bar: visible while an archive decompression
   // runs (download pipeline / xp3 unpack), hidden again once it finishes.
   @State extractText: string = '';
@@ -206,6 +202,17 @@ struct Index {
         // status bar back over the game).
         try {
           const fsReq: number = entryNapi.pollFullscreen() as number;
+          // Trace the poll itself, but only when the request value changes
+          // (10 Hz otherwise, which would flood the diag file).
+          if (fsReq !== this.lastFsLog) {
+            this.lastFsLog = fsReq;
+            try {
+              entryNapi.diagLog('shell: poll=' + fsReq + ' device=' +
+                deviceInfo.deviceType + ' boot=' + this.bootState);
+            } catch (eDg) {
+              // diag channel not ready
+            }
+          }
           if (fsReq === 0 || fsReq === 1) {
             const deviceType: string = deviceInfo.deviceType;
             if (deviceType === 'phone') {
@@ -213,15 +220,31 @@ struct Index {
             } else {
               const ctxFs = getContext(this) as common.UIAbilityContext;
               window.getLastWindow(ctxFs).then((mainWindow: window.Window): Promise<void> => {
+                try {
+                  entryNapi.diagLog('shell: setFullScreen(' + fsReq + ') calling');
+                } catch (eDg2) {
+                  // ignore
+                }
                 return mainWindow.setFullScreen(fsReq === 1);
               }).then((): void => {
                 entryNapi.ackFullscreen(fsReq);
                 this.log('fullscreen request applied: ' + fsReq);
+                try {
+                  entryNapi.diagLog('shell: setFullScreen(' + fsReq + ') applied, acked');
+                } catch (eDg3) {
+                  // ignore
+                }
               }).catch((eFs: Error): void => {
                 // Ack anyway so the request is not retried in a hot loop; the
                 // settings checkbox keeps the previous (applied) state.
                 entryNapi.ackFullscreen(fsReq);
                 this.log('fullscreen request failed: ' + JSON.stringify(eFs));
+                try {
+                  entryNapi.diagLog('shell: setFullScreen(' + fsReq + ') FAILED: ' +
+                    JSON.stringify(eFs));
+                } catch (eDg4) {
+                  // ignore
+                }
               });
             }
           }
@@ -2529,22 +2552,6 @@ struct Index {
     this.hoverProxy = isHover ? proxy : (this.hoverProxy === proxy ? 0 : this.hoverProxy);
   }
 
-  /* Fit the largest 16:9 rectangle inside the given window size and store
-   * it as the game/bootstrap canvas. Every page stack runs this from its
-   * onAreaChange so all pages share the exact same fitted canvas. */
-  private fitGameCanvas(stageW: number, stageH: number): void {
-    if (stageW > 0 && stageH > 0) {
-      let gw: number = stageW;
-      let gh: number = stageW * 9 / 16;
-      if (gh > stageH) {
-        gh = stageH;
-        gw = stageH * 16 / 9;
-      }
-      this.gameW = Math.floor(gw);
-      this.gameH = Math.floor(gh);
-    }
-  }
-
   build() {
     Stack({ alignContent: Alignment.Center }) {
       // Title background image shipped inside the HAP (rawfile); only on
@@ -2614,9 +2621,11 @@ struct Index {
             })
             // Strict 16:9 canvas fitted inside the window (letterboxed on
             // the sides on 3:2 HarmonyOS PC / tablet screens instead of
-            // being stretched edge to edge).
-            .width(this.gameW)
-            .height(this.gameH)
+            // being stretched edge to edge). With no explicit width/height,
+            // aspectRatio makes ArkUI pick the largest 16:9 rectangle that
+            // fits the parent constraints - no manual size bookkeeping.
+            .aspectRatio(16 / 9)
+            .constraintSize({ maxWidth: '100%', maxHeight: '100%' })
             // Report the real component size to the engine: the native
             // OnSurfaceChanged callback never fires on this system, so
             // without this the SDL window size stays at the fallback and
@@ -2635,6 +2644,12 @@ struct Index {
                   // laid out in the 1920x1080 coordinate system.
                   entryNapi.setSurfaceSize(vp2px(w), vp2px(h));
                   this.log('XComponent size: ' + vp2px(w).toFixed(0) + 'x' + vp2px(h).toFixed(0) + ' px');
+                  try {
+                    entryNapi.diagLog('xc: game area=' + w.toFixed(0) + 'x' + h.toFixed(0) +
+                      ' vp (' + vp2px(w).toFixed(0) + 'x' + vp2px(h).toFixed(0) + ' px)');
+                  } catch (eDg) {
+                    // diag channel not ready yet
+                  }
                 }
               } catch (e) {
                 this.log('onAreaChange exception: ' + JSON.stringify(e));
@@ -2668,8 +2683,8 @@ struct Index {
               })
               // Same fitted 16:9 canvas as the game surface (16:9 movies
               // then exactly cover the game picture).
-              .width(this.gameW)
-              .height(this.gameH)
+              .aspectRatio(16 / 9)
+              .constraintSize({ maxWidth: '100%', maxHeight: '100%' })
               .zIndex(3)
             }
             // No .onTouch here: libace_compatible crashes the UI thread while
@@ -2682,8 +2697,8 @@ struct Index {
           Column()
             // Same fitted 16:9 canvas as the XComponent so overlay vp coords
             // map directly onto the SDL window coordinate space.
-            .width(this.gameW)
-            .height(this.gameH)
+            .aspectRatio(16 / 9)
+            .constraintSize({ maxWidth: '100%', maxHeight: '100%' })
             .backgroundColor('#00000000')
             .zIndex(4)
             .onTouch((event: TouchEvent) => {
@@ -2754,18 +2769,6 @@ struct Index {
         .height('100%')
         // Letterbox: black bars around the fitted 16:9 canvas.
         .backgroundColor('#000000')
-        .onAreaChange((oldStage: Area, newStage: Area) => {
-          // Fit the largest 16:9 rectangle inside the window: HarmonyOS PC
-          // screens are mostly 3:2, so a plain height('100%') +
-          // aspectRatio(16/9) would overflow horizontally and get clamped
-          // back to a distorted full-window canvas.
-          try {
-            this.fitGameCanvas(newStage.width as number,
-              newStage.height as number);
-          } catch (eFit) {
-            // keep the previous fitted size
-          }
-        })
       } else if (this.bootState === 2) {
         // The setup controls use the same 16:9 canvas as Background.png.
         // Percent positions are relative to that canvas, so controls stay
@@ -2890,13 +2893,11 @@ struct Index {
               this.importLocal();
             })
         }
-        .width(this.gameW)
-        .height(this.gameH)
-        .backgroundColor('#000000')
-        .onAreaChange((oldStage: Area, newStage: Area) => {
-          this.fitGameCanvas(newStage.width as number,
-            newStage.height as number);
-        })
+        // Fitted 16:9 canvas (largest 16:9 rectangle inside the window); no
+        // black background here - the bootstrap artwork must stay visible
+        // around/through it.
+        .aspectRatio(16 / 9)
+        .constraintSize({ maxWidth: '100%', maxHeight: '100%' })
       } else if (this.bootState === 3 || this.bootState === 4 || this.bootState === 7) {
         // Keep the same artwork during download/import and overlay the live
         // progress control on the supplied center track. This makes the
@@ -2976,13 +2977,9 @@ struct Index {
             .fontSize(18).fontColor(Color.White).maxLines(3)
             .textAlign(TextAlign.Center)
         }
-        .width(this.gameW)
-        .height(this.gameH)
-        .backgroundColor('#000000')
-        .onAreaChange((oldStage: Area, newStage: Area) => {
-          this.fitGameCanvas(newStage.width as number,
-            newStage.height as number);
-        })
+        // Fitted 16:9 canvas (same rule as the setup page).
+        .aspectRatio(16 / 9)
+        .constraintSize({ maxWidth: '100%', maxHeight: '100%' })
       } else {
         Column({ space: 14 }) {
           Text('需要授权').fontSize(18).fontColor(Color.White)

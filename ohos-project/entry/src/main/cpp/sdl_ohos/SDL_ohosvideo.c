@@ -556,6 +556,10 @@ static void OHOS_SetWindowFullscreen(_THIS, SDL_Window *window, SDL_VideoDisplay
 	 * toggles the OS fullscreen state on HarmonyOS PC / 2-in-1 tablets).
 	 * The SDL window keeps its logical size either way - the compositor
 	 * stretches the buffer into the 16:9 surface. */
+	if (SDL_OHOS_DiagLog)
+	{
+		SDL_OHOS_DiagLog("driver: OHOS_SetWindowFullscreen reached");
+	}
 	if (SDL_OHOS_SetAppFullscreen)
 	{
 		SDL_OHOS_SetAppFullscreen(fullscreen ? 1 : 0);
@@ -570,19 +574,65 @@ static void OHOS_SetWindowFullscreen(_THIS, SDL_Window *window, SDL_VideoDisplay
  * on some devices. libentry.so reaches these through the exported dynamic
  * symbols (napi pollFullscreen/ackFullscreen). */
 #include <stdatomic.h>
+#include <stdio.h>
+#include <time.h>
+#include <unistd.h>
 
 static atomic_int g_ohos_fullscreen_request = -1; /* -1 none / 0 windowed / 1 fullscreen */
 static atomic_int g_ohos_fullscreen_state = -1;   /* -1 unknown / 0 windowed / 1 fullscreen */
 
+/* Diagnostic sink shared by engine, driver and shell (napi diagLog).
+ * Appends one line to <data dir>/diag_fullscreen.log, falling back to the
+ * app files dir. Callers throttle repeated values themselves. */
+void SDL_OHOS_DiagLog(const char *line)
+{
+	const char *dir = SDL_OHOS_GetDataDir ? SDL_OHOS_GetDataDir() : NULL;
+	if ((!dir || !dir[0]) && SDL_OHOS_GetFilesDir)
+		dir = SDL_OHOS_GetFilesDir();
+	if (!dir || !dir[0] || !line || !line[0])
+		return;
+	char path[1024];
+	snprintf(path, sizeof(path), "%s/diag_fullscreen.log", dir);
+	FILE *f = fopen(path, "a");
+	if (!f)
+		return;
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME, &ts);
+	struct tm tmv;
+	localtime_r(&ts.tv_sec, &tmv);
+	fprintf(f, "[%02d:%02d:%02d.%03ld][t%ld] %s\n",
+		tmv.tm_hour, tmv.tm_min, tmv.tm_sec,
+		(long)(ts.tv_nsec / 1000000), (long)gettid(), line);
+	fclose(f);
+}
+
 void SDL_OHOS_SetAppFullscreen(int fullscreen)
 {
-	atomic_store_explicit(&g_ohos_fullscreen_request, fullscreen ? 1 : 0,
+	int v = fullscreen ? 1 : 0;
+	atomic_store_explicit(&g_ohos_fullscreen_request, v,
 		memory_order_release);
+	if (SDL_OHOS_DiagLog)
+	{
+		char diagbuf[64];
+		snprintf(diagbuf, sizeof(diagbuf), "state: request=%d", v);
+		SDL_OHOS_DiagLog(diagbuf);
+	}
 }
 
 int SDL_OHOS_GetAppFullscreenState(void)
 {
-	return atomic_load_explicit(&g_ohos_fullscreen_state, memory_order_acquire);
+	int s = atomic_load_explicit(&g_ohos_fullscreen_state, memory_order_acquire);
+	/* Throttled: the settings menu polls this constantly (FullScreenGuard);
+	 * only log when the applied state actually changes. */
+	static atomic_int logged = -999;
+	int prev = atomic_exchange_explicit(&logged, s, memory_order_relaxed);
+	if (prev != s && SDL_OHOS_DiagLog)
+	{
+		char diagbuf[64];
+		snprintf(diagbuf, sizeof(diagbuf), "state: read=%d", s);
+		SDL_OHOS_DiagLog(diagbuf);
+	}
+	return s;
 }
 
 int SDL_OHOS_PollFullscreenRequest(void)
@@ -599,4 +649,12 @@ void SDL_OHOS_AckFullscreen(int applied)
 	int expected = applied;
 	atomic_compare_exchange_strong_explicit(&g_ohos_fullscreen_request,
 		&expected, -1, memory_order_release, memory_order_acquire);
+	if (SDL_OHOS_DiagLog)
+	{
+		char diagbuf[96];
+		snprintf(diagbuf, sizeof(diagbuf), "state: ack=%d cleared=%d req_now=%d",
+			applied, expected == applied ? 1 : 0,
+			atomic_load_explicit(&g_ohos_fullscreen_request, memory_order_acquire));
+		SDL_OHOS_DiagLog(diagbuf);
+	}
 }

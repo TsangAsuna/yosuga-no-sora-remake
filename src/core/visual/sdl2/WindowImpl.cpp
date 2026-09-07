@@ -1779,6 +1779,20 @@ bool tTJSNI_Window::GetShowScrollBars() const
 //---------------------------------------------------------------------------
 void tTJSNI_Window::SetFullScreen(bool b)
 {
+	/* Diagnostic: confirm the TJS settings menu actually reaches this
+	 * property (it was not registered on the Window class at all before,
+	 * which silently swallowed the game-menu fullscreen switch). */
+	{
+		extern "C" {
+		void SDL_OHOS_DiagLog(const char *line) __attribute__((weak));
+		}
+		if (SDL_OHOS_DiagLog)
+		{
+			char diagbuf[96];
+			snprintf(diagbuf, sizeof(diagbuf), "tjs: Window.fullScreen = %d", b ? 1 : 0);
+			SDL_OHOS_DiagLog(diagbuf);
+		}
+	}
 	if(!Form) return;
 	Form->SetFullScreenMode(b);
 }
@@ -2304,6 +2318,26 @@ TJS_BEGIN_NATIVE_PROP_DECL(drawDevice)
 	TJS_END_NATIVE_PROP_SETTER
 }
 TJS_END_NATIVE_PROP_DECL_OUTER(cls, drawDevice)
+//---------------------------------------------------------------------------
+TJS_BEGIN_NATIVE_PROP_DECL(fullScreen)
+{
+	TJS_BEGIN_NATIVE_PROP_GETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+		*result = _this->GetFullScreen();
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_GETTER
+
+	TJS_BEGIN_NATIVE_PROP_SETTER
+	{
+		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
+		_this->SetFullScreen(*param != 0);
+		return TJS_S_OK;
+	}
+	TJS_END_NATIVE_PROP_SETTER
+}
+TJS_END_NATIVE_PROP_DECL_OUTER(cls, fullScreen)
 //---------------------------------------------------------------------------
 TJS_BEGIN_NATIVE_PROP_DECL(touchScaleThreshold)
 {

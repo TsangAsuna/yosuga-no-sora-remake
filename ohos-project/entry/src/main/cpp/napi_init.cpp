@@ -367,6 +367,30 @@ static napi_value AckFullscreen(napi_env env, napi_callback_info info)
 	return nullptr;
 }
 
+/* diagLog(line): append one diagnostic line to <data dir>/diag_fullscreen.log
+ * (see SDL_OHOS_DiagLog in SDL_ohosvideo.c). Used by the ArkTS shell to trace
+ * the fullscreen poll and the XComponent canvas size alongside the native
+ * side of the same chain. */
+static napi_value DiagLog(napi_env env, napi_callback_info info)
+{
+	size_t argc = 1;
+	napi_value args[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+	size_t len = 0;
+	if (argc >= 1 &&
+		napi_get_value_string_utf8(env, args[0], nullptr, 0, &len) == napi_ok)
+	{
+		std::vector<char> text(len + 1, '\0');
+		size_t copied = 0;
+		if (napi_get_value_string_utf8(env, args[0], text.data(),
+			len + 1, &copied) == napi_ok)
+		{
+			SDL_OHOS_DiagLog(text.data());
+		}
+	}
+	return nullptr;
+}
+
 /* ---- data.xp3 extraction ------------------------------------------------ */
 
 namespace {
@@ -563,6 +587,7 @@ static napi_value Init(napi_env env, napi_value exports)
 		{"isEngineRunning", nullptr, IsEngineRunning, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"pollFullscreen", nullptr, PollFullscreen, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"ackFullscreen", nullptr, AckFullscreen, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"diagLog", nullptr, DiagLog, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"setSurfaceSize", nullptr, SetSurfaceSize, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"extractXp3Start", nullptr, ExtractXp3Start, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"uriToPath", nullptr, UriToPath, nullptr, nullptr, nullptr, napi_default, nullptr},

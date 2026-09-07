@@ -90,12 +90,14 @@ EM_JS_DEPS(main, "$FS,$IDBFS");
 #endif
 
 #ifdef __OHOS__
-/* Weak bridges into libentry.so (krkrsdl2_ohos_entry.cpp): request the ArkTS
- * shell to apply window.setWindowFullscreen() and read back the applied
- * state. Weak + run-time checked because this .so links before libentry. */
+/* Weak bridges into libkrkrsdl2.so (SDL_ohosvideo.c, resolved within this
+ * same .so at link time): request the ArkTS shell to apply
+ * window.setFullScreen() and read back the applied state. Weak is kept for
+ * safety; both symbols are defined by SDL_ohosvideo.c. */
 extern "C" {
 void SDL_OHOS_SetAppFullscreen(int fullscreen) __attribute__((weak));
 int SDL_OHOS_GetAppFullscreenState(void) __attribute__((weak));
+void SDL_OHOS_DiagLog(const char *line) __attribute__((weak));
 }
 #endif
 
@@ -1600,12 +1602,24 @@ void TVPWindowWindow::SetFullScreenMode(bool fullscreen)
 #elif defined(__OHOS__)
 	/* OHOS keeps the SDL window at the game's logical resolution (the layer
 	 * size); the OS-side fullscreen/windowed switch is applied by the ArkTS
-	 * shell through this bridge (window.setWindowFullscreen), which is what
-	 * the fullscreen/windowed buttons of the game settings menu drive on
+	 * shell through this bridge (window.setFullScreen), which is what the
+	 * fullscreen/windowed buttons of the game settings menu drive on
 	 * HarmonyOS PC and 2-in-1 tablets. */
+	if (SDL_OHOS_DiagLog)
+	{
+		char diagbuf[128];
+		snprintf(diagbuf, sizeof(diagbuf),
+			"engine: SetFullScreenMode(%d) layer=%dx%d",
+			fullscreen ? 1 : 0, this->GetInnerWidth(), this->GetInnerHeight());
+		SDL_OHOS_DiagLog(diagbuf);
+	}
 	if (SDL_OHOS_SetAppFullscreen)
 	{
 		SDL_OHOS_SetAppFullscreen(fullscreen ? 1 : 0);
+	}
+	else if (SDL_OHOS_DiagLog)
+	{
+		SDL_OHOS_DiagLog("engine: SetAppFullscreen bridge is NULL");
 	}
 #endif
 }

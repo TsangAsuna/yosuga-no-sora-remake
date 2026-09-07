@@ -125,6 +125,13 @@ OHOS_EXPORT int SDL_OHOS_PollFullscreenRequest(void) __attribute__((weak));
  * with a CAS so a newer request written in between is not lost. */
 OHOS_EXPORT void SDL_OHOS_AckFullscreen(int applied) __attribute__((weak));
 
+/* Append one diagnostic line to <data dir>/diag_fullscreen.log (falls back
+ * to the files dir). Used to trace the fullscreen switch chain (TJS ->
+ * engine -> driver -> state atom -> napi -> ArkTS) and the actual
+ * XComponent canvas size on HarmonyOS PC / tablets. One fopen/append/fclose
+ * per line; callers throttle repeated values. */
+OHOS_EXPORT void SDL_OHOS_DiagLog(const char *line) __attribute__((weak));
+
 #ifdef __cplusplus
 }
 #endif
