@@ -1777,22 +1777,28 @@ bool tTJSNI_Window::GetShowScrollBars() const
 }
 #endif
 //---------------------------------------------------------------------------
+#ifdef __OHOS__
+/* Weak bridge into libkrkrsdl2.so (SDL_ohosvideo.c): diagnostic sink shared
+ * by the whole fullscreen chain. Declared at file scope - a linkage
+ * specification block inside a function body does not compile on the OHOS
+ * clang. Weak + runtime-checked, and only declared on OHOS (__attribute__
+ * is a GNU extension MSVC does not take). */
+extern "C" void SDL_OHOS_DiagLog(const char *line) __attribute__((weak));
+#endif
+//---------------------------------------------------------------------------
 void tTJSNI_Window::SetFullScreen(bool b)
 {
 	/* Diagnostic: confirm the TJS settings menu actually reaches this
 	 * property (it was not registered on the Window class at all before,
 	 * which silently swallowed the game-menu fullscreen switch). */
+#ifdef __OHOS__
+	if (SDL_OHOS_DiagLog)
 	{
-		extern "C" {
-		void SDL_OHOS_DiagLog(const char *line) __attribute__((weak));
-		}
-		if (SDL_OHOS_DiagLog)
-		{
-			char diagbuf[96];
-			snprintf(diagbuf, sizeof(diagbuf), "tjs: Window.fullScreen = %d", b ? 1 : 0);
-			SDL_OHOS_DiagLog(diagbuf);
-		}
+		char diagbuf[96];
+		snprintf(diagbuf, sizeof(diagbuf), "tjs: Window.fullScreen = %d", b ? 1 : 0);
+		SDL_OHOS_DiagLog(diagbuf);
 	}
+#endif
 	if(!Form) return;
 	Form->SetFullScreenMode(b);
 }
@@ -2332,7 +2338,7 @@ TJS_BEGIN_NATIVE_PROP_DECL(fullScreen)
 	TJS_BEGIN_NATIVE_PROP_SETTER
 	{
 		TJS_GET_NATIVE_INSTANCE(/*var. name*/_this, /*var. type*/tTJSNI_Window);
-		_this->SetFullScreen(*param != 0);
+		_this->SetFullScreen(((tjs_int)*param) ? true : false);
 		return TJS_S_OK;
 	}
 	TJS_END_NATIVE_PROP_SETTER
