@@ -28,6 +28,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -637,19 +638,45 @@ public class BootstrapActivity extends Activity {
                                     Toast.LENGTH_SHORT).show();
                             return; // keep the dialog open
                         }
-                        baseUrlInput.setText(url.getText());
-                        proxyInput.setText(proxy.getText());
-                        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                                .putString(KEY_BASE_URL, url.getText().toString())
-                                .putString(KEY_PROXY_PREFIX, proxy.getText().toString())
-                                .apply();
-                        nodePinger.removeCallbacksAndMessages(null);
-                        dialog.dismiss();
+                        // Connectivity check: reject prefixes that cannot
+                        // actually reach GitHub, so the download does not
+                        // silently fail right after confirming.
+                        if (!proxyText.isEmpty()) {
+                            Toast.makeText(this, "正在检测加速前缀连通性…",
+                                    Toast.LENGTH_SHORT).show();
+                            final String checked = proxyText;
+                            new Thread(() -> {
+                                long ms = pingNodeLatency(checked);
+                                runOnUi(() -> {
+                                    if (ms < 0) {
+                                        Toast.makeText(this,
+                                                "该加速前缀当前不可达，请更换或留空使用直连",
+                                                Toast.LENGTH_LONG).show();
+                                        return; // keep the dialog open
+                                    }
+                                    applyDownloadSettings(url, proxy, nodePinger, dialog);
+                                });
+                            }).start();
+                        } else {
+                            applyDownloadSettings(url, proxy, nodePinger, dialog);
+                        }
                     });
         });
         dialog.setOnDismissListener(ignored -> nodePinger.removeCallbacksAndMessages(null));
 
         dialog.show();
+    }
+
+    private void applyDownloadSettings(EditText url, EditText proxy,
+            android.os.Handler nodePinger, AlertDialog dialog) {
+        baseUrlInput.setText(url.getText());
+        proxyInput.setText(proxy.getText());
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putString(KEY_BASE_URL, url.getText().toString())
+                .putString(KEY_PROXY_PREFIX, proxy.getText().toString())
+                .apply();
+        nodePinger.removeCallbacksAndMessages(null);
+        dialog.dismiss();
     }
 
     private void setProgress(String text, int percent) {
