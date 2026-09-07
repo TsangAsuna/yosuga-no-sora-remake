@@ -146,6 +146,21 @@ static void TVPIOSStartKeepAliveAudio(void)
         NSLog(@"krkrsdl2: background keep-alive start failed: %d", (int)status);
 }
 
+static void TVPIOSReactivateAudioSession(void)
+{
+    /* Belt-and-braces: make sure the shared session is active for the SDL
+     * audio backend after any lifecycle transition (interruptions from
+     * alarms/calls, background suspension, ...).  SDL installs its own
+     * interruption listener, but an inactive session is not an
+     * interruption - without this the game would come back from the
+     * background with working rendering but silent audio. */
+    NSError *error = nil;
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    if(![session setActive:YES error:&error])
+        NSLog(@"krkrsdl2: session reactivate failed: %@",
+              error.localizedDescription ?: @"unknown");
+}
+
 static void TVPIOSStopKeepAliveAudio(void)
 {
     if(!TVPIOSKeepAliveQueue) return;
@@ -154,9 +169,18 @@ static void TVPIOSStopKeepAliveAudio(void)
     TVPIOSKeepAliveQueue = NULL;
     TVPIOSKeepAliveBuffers[0] = NULL;
     TVPIOSKeepAliveBuffers[1] = NULL;
-    [[AVAudioSession sharedInstance] setActive:NO
-                    withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
-                            error:nil];
+    /* Do NOT deactivate the shared audio session here.  The SDL audio
+     * backend plays through the very same AVAudioSession: deactivating it
+     * when the keep-alive loop stops silences the whole app until some
+     * other event happens to reactivate the session - which is exactly
+     * the "BGM never comes back after returning from the background"
+     * report.  Re-activate the session instead so the engine audio picks
+     * up right where it was muted. */
+    NSError *error = nil;
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    if(![session setActive:YES error:&error])
+        NSLog(@"krkrsdl2: session reactivate after keep-alive stop failed: %@",
+              error.localizedDescription ?: @"unknown");
 }
 
 /* Documents/<bundle>/savedata directory (UTF-8, no trailing slash).  Used
@@ -231,6 +255,7 @@ extern "C" const char *TVPIOSGetDocumentsDirectory(void)
     if([scene isKindOfClass:UIWindowScene.class])
         TVPIOSScheduleSDLWindowRelayout((UIWindowScene *)scene);
     TVPIOSStopKeepAliveAudio();
+    TVPIOSReactivateAudioSession();
 }
 
 - (void)installKeepAliveLifecycleObservers
@@ -259,6 +284,7 @@ extern "C" const char *TVPIOSGetDocumentsDirectory(void)
                     usingBlock:^(NSNotification *note) {
                         (void)note;
                         TVPIOSStopKeepAliveAudio();
+                        TVPIOSReactivateAudioSession();
                     }];
     });
 }

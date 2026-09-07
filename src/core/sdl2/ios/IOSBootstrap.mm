@@ -359,6 +359,12 @@ static NSString *HexString(const unsigned char *bytes, size_t len)
 @property (nonatomic, assign) NSInteger chunksRemaining;
 @property (nonatomic, assign) BOOL chunkFailed;
 @property (nonatomic, copy) NSDictionary *activeTaskState;
+/* Download/extract pipeline: finished archives are handed to a SERIAL
+ * extract queue while the download loop keeps fetching the next asset. */
+@property (nonatomic, strong) dispatch_queue_t extractQueue;
+@property (nonatomic, assign) NSInteger extractedCount;
+@property (nonatomic, assign) BOOL allDownloadsDone;
+@property (nonatomic, assign) BOOL transferCancelled;
 @end
 
 @implementation TVPIOSBootstrapVC
@@ -380,6 +386,11 @@ static NSString *HexString(const unsigned char *bytes, size_t len)
     UIButton *_importButton;
     UILabel *_progressLabel;
     UIView *_progressFill;
+    /* Second (extract) progress bar: visible while an archive is being
+     * decompressed (serial queue), hidden again once extraction ends. */
+    UIImageView *_extractTrack;
+    UIView *_extractFill;
+    UILabel *_extractLabel;
     UIView *_container;
     BOOL _busy;
     BOOL _importPickerOpen;
@@ -555,6 +566,25 @@ static NSString *HexString(const unsigned char *bytes, size_t len)
     _progressFill.layer.cornerRadius = 9;
     _progressFill.hidden = YES;
     [_container addSubview:_progressFill];
+
+    /* Extract bar (green), stacked directly above the download bar:
+     * text at y=622..666, track at y=668..686 (download track y=690..716). */
+    _extractTrack = [self makeAssetView:@"progress_track"
+                                  frame:CGRectMake(210, 668, 1215, 18)];
+    _extractTrack.hidden = YES;
+    [_container addSubview:_extractTrack];
+    _extractFill = [[UIView alloc] initWithFrame:CGRectMake(214, 672, 0, 10)];
+    _extractFill.backgroundColor = [self colorFromHex:0x4CAF50];
+    _extractFill.layer.cornerRadius = 7;
+    _extractFill.hidden = YES;
+    [_container addSubview:_extractFill];
+    _extractLabel = [[UILabel alloc] initWithFrame:CGRectMake(210, 622, 1215, 44)];
+    _extractLabel.font = [UIFont systemFontOfSize:20];
+    _extractLabel.textColor = [UIColor colorWithWhite:0.85 alpha:1.0];
+    _extractLabel.textAlignment = NSTextAlignmentCenter;
+    _extractLabel.numberOfLines = 1;
+    _extractLabel.hidden = YES;
+    [_container addSubview:_extractLabel];
 
     _messageLabel = [[UILabel alloc] initWithFrame:CGRectMake(200, 580, 1520, 100)];
     _messageLabel.font = [UIFont systemFontOfSize:22];
@@ -822,6 +852,8 @@ static NSString *HexString(const unsigned char *bytes, size_t len)
         CGRect frame = _progressFill.frame;
         frame.size.width = 0;
         _progressFill.frame = frame;
+        // The transfer is over: make sure the extract bar is gone.
+        [self hideExtractProgress];
     }
 }
 
@@ -832,6 +864,28 @@ static NSString *HexString(const unsigned char *bytes, size_t len)
     CGRect frame = _progressFill.frame;
     frame.size.width = 1207.0 * clamped;
     _progressFill.frame = frame;
+}
+
+- (void)setExtractText:(NSString *)text progress:(float)progress
+{
+    _extractLabel.text = text;
+    _extractLabel.hidden = NO;
+    _extractTrack.hidden = NO;
+    _extractFill.hidden = NO;
+    CGFloat clamped = MAX(0.0, MIN(1.0, progress));
+    CGRect frame = _extractFill.frame;
+    frame.size.width = 1207.0 * clamped;
+    _extractFill.frame = frame;
+}
+
+- (void)hideExtractProgress
+{
+    _extractLabel.hidden = YES;
+    _extractTrack.hidden = YES;
+    _extractFill.hidden = YES;
+    CGRect frame = _extractFill.frame;
+    frame.size.width = 0;
+    _extractFill.frame = frame;
 }
 
 - (void)setMessage:(NSString *)message
@@ -888,6 +942,15 @@ static NSString *HexString(const unsigned char *bytes, size_t len)
         self->_assetIndex = 0;
         self->_doneBytes = 0;
         self->_totalBytes = 0;
+        /* Reset the download/extract pipeline state for this round. */
+        self->_extractedCount = 0;
+        self->_allDownloadsDone = NO;
+        self->_transferCancelled = NO;
+        if (!self->_extractQueue)
+        {
+            self->_extractQueue =
+                dispatch_queue_create("tvp.ios.bootstrap.extract", DISPATCH_QUEUE_SERIAL);
+        }
         self->_downloadStart = CFAbsoluteTimeGetCurrent();
         for (NSDictionary *a in assets)
         {
@@ -915,7 +978,15 @@ static NSString *HexString(const unsigned char *bytes, size_t len)
     NSArray *assets = self.assetList;
     if (self.assetIndex >= assets.count)
     {
-        [self dataInstalled];
+        /* Every archive is downloaded. If extraction has also caught up,
+         * finish; otherwise the serial extract queue calls dataInstalled
+         * once the last archive is merged. */
+        self->_allDownloadsDone = YES;
+        if (self->_extractedCount >= (NSInteger)assets.count)
+        {
+            [self hideExtractProgress];
+            [self dataInstalled];
+        }
         return;
     }
     NSDictionary *asset = assets[self.assetIndex];
@@ -1101,8 +1172,19 @@ static NSString *HexString(const unsigned char *bytes, size_t len)
         NSDictionary *st = self.activeTaskState;
         [self.chunkFile closeFile];
         self.chunkFile = nil;
-        [self verifyAndProcessAsset:st[@"tmp"] name:st[@"name"]
-            sha256:st[@"sha256"] assetSize:st[@"size"]];
+        /* Pipeline: hand the finished archive to the SERIAL extract queue
+         * and IMMEDIATELY keep downloading the next one - decompression no
+         * longer stalls the transfer. doneBytes advances when a download
+         * completes (the extract bar owns extraction progress). */
+        self.doneBytes += [st[@"size"] longLongValue];
+        self.assetIndex = self.assetIndex + 1;
+        self.activeTaskState = nil;
+        dispatch_async(self.extractQueue, ^{
+            if (self->_transferCancelled) return;
+            [self verifyAndProcessAsset:st[@"tmp"] name:st[@"name"]
+                sha256:st[@"sha256"] assetSize:st[@"size"]];
+        });
+        [self downloadNextAsset];
     }
 }
 
@@ -1132,33 +1214,37 @@ static NSString *HexString(const unsigned char *bytes, size_t len)
 - (void)verifyAndProcessAsset:(NSString *)tmp name:(NSString *)name
     sha256:(NSString *)sha256 assetSize:(NSNumber *)assetSize
 {
-    [self setProgressText:[NSString stringWithFormat:@"正在校验 %@", name] progress:0];
-    /* sha256 over ~1.5 GB must NOT run on the main thread: it blocks the
-     * run loop long enough for the iOS watchdog to kill the app (this was
-     * the ~40% crash). Verify and extract on a background queue. */
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        if (sha256.length > 0)
-        {
-            unsigned char digest[CC_SHA256_DIGEST_LENGTH];
-            NSString *hashErr = nil;
-            if (!SHA256OfFile(tmp, digest, &hashErr) ||
-                ![[HexString(digest, CC_SHA256_DIGEST_LENGTH)
-                    lowercaseString] isEqualToString:[sha256 lowercaseString]])
-            {
-                RemoveTree(tmp);
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [self downloadFailed:@"下载校验失败（sha256 不匹配），请重试"];
-                });
-                return;
-            }
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self setProgressText:[NSString stringWithFormat:@"正在解压 %@", name] progress:0];
-            self.doneBytes += assetSize.longLongValue;
-        });
-        IosLog([NSString stringWithFormat:@"verified %@, extracting", name]);
-        [self processArchive:tmp name:name];
+    (void)assetSize;
+    /* Runs on the serial extract queue (one archive at a time, while the
+     * download loop keeps fetching). The heavy sha256 must stay off the
+     * main thread: it previously blocked the run loop long enough for the
+     * iOS watchdog to kill the app. */
+    if (self->_transferCancelled) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self setProgressText:[NSString stringWithFormat:@"正在校验 %@", name]
+                     progress:0];
     });
+    if (sha256.length > 0)
+    {
+        unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+        NSString *hashErr = nil;
+        if (!SHA256OfFile(tmp, digest, &hashErr) ||
+            ![[HexString(digest, CC_SHA256_DIGEST_LENGTH)
+                lowercaseString] isEqualToString:[sha256 lowercaseString]])
+        {
+            RemoveTree(tmp);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self downloadFailed:@"下载校验失败（sha256 不匹配），请重试"];
+            });
+            return;
+        }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self setExtractText:[NSString stringWithFormat:@"正在解压 %@", name]
+                    progress:0];
+    });
+    IosLog([NSString stringWithFormat:@"verified %@, extracting", name]);
+    [self processArchive:tmp name:name];
 }
 
 /* The former single-stream downloadTask flow is superseded by the
@@ -1187,6 +1273,9 @@ static NSString *HexString(const unsigned char *bytes, size_t len)
 - (void)downloadFailed:(NSString *)message
 {
     IosLog([NSString stringWithFormat:@"FAILED: %@", message]);
+    /* Stop the pipeline: pending extract-queue jobs see this flag and bail
+     * out, and the extract bar disappears with the transfer. */
+    self->_transferCancelled = YES;
     NSDictionary *st = self.activeTaskState;
     if (st)
     {
@@ -1200,67 +1289,79 @@ static NSString *HexString(const unsigned char *bytes, size_t len)
     [self setBusy:NO];
 }
 
-/* extraction progress: throttled main-queue updates */
+/* extraction progress: throttled main-queue updates onto the extract bar */
 static int ExtractProgressCb(void *ctx, int done, int total, const char *nameUtf8)
 {
+    (void)nameUtf8;
     if (done % 40 != 0 && done != total)
         return 1;
     TVPIOSBootstrapVC *vc = (__bridge TVPIOSBootstrapVC *)ctx;
     NSString *text = [NSString stringWithFormat:
         @"正在解压：%d / %d 个文件", done, total];
+    float pct = total > 0 ? (float)done * 100.0f / (float)total : 0.0f;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [vc setProgressText:text progress:0];
+        [vc setExtractText:text progress:pct];
     });
     return 1;
 }
 
 - (void)processArchive:(NSString *)path name:(NSString *)name
 {
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSString *staging = StagingPath();
-        RemoveTree(staging);
-        EnsureDir(staging);
-        int rc = 0;
-        char err[512] = {0};
-        if ([name.lowercaseString hasSuffix:@".xp3"])
+    /* Runs on the serial extract queue: verify → extract → merge one
+     * archive at a time while the download loop keeps fetching the next
+     * asset. mergeOnMain hops to the main queue synchronously for the
+     * (cheap) tree moves. */
+    NSString *staging = StagingPath();
+    RemoveTree(staging);
+    EnsureDir(staging);
+    int rc = 0;
+    char err[512] = {0};
+    if ([name.lowercaseString hasSuffix:@".xp3"])
+    {
+        OHOSXp3ExtractResult xr;
+        memset(&xr, 0, sizeof(xr));
+        rc = OHOS_ExtractXp3(path.fileSystemRepresentation,
+            staging.fileSystemRepresentation, ExtractProgressCb,
+            (__bridge void *)self, &xr);
+        if (rc != 0)
+            snprintf(err, sizeof(err), "%s", xr.error);
+    }
+    else
+    {
+        rc = Krkr_ExtractZip(path.fileSystemRepresentation,
+            staging.fileSystemRepresentation, ExtractProgressCb,
+            (__bridge void *)self, err, sizeof(err));
+    }
+    NSString *errMsg = nil;
+    NSString *cErr = rc != 0 ? [NSString stringWithUTF8String:err] : nil;
+    BOOL ok = (rc == 0) && [self mergeOnMain:staging err:&errMsg];
+    IosLog([NSString stringWithFormat:@"extract %@ rc=%d cErr=%@ mergeErr=%@",
+        name, rc, cErr ?: @"", errMsg ?: @""]);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (ok)
         {
-            OHOSXp3ExtractResult xr;
-            memset(&xr, 0, sizeof(xr));
-            rc = OHOS_ExtractXp3(path.fileSystemRepresentation,
-                staging.fileSystemRepresentation, ExtractProgressCb,
-                (__bridge void *)self, &xr);
-            if (rc != 0)
-                snprintf(err, sizeof(err), "%s", xr.error);
+            RemoveTree(path);
+            RemoveTree(staging);
+            self->_extractedCount += 1;
+            if (self->_transferCancelled) return;
+            /* Pipeline finish line: the last archive is merged only when
+             * every download has also completed. */
+            if (self.allDownloadsDone &&
+                self->_extractedCount >= (NSInteger)self.assetList.count)
+            {
+                [self hideExtractProgress];
+                [self dataInstalled];
+            }
         }
         else
         {
-            rc = Krkr_ExtractZip(path.fileSystemRepresentation,
-                staging.fileSystemRepresentation, ExtractProgressCb,
-                (__bridge void *)self, err, sizeof(err));
+            RemoveTree(path);   /* downloaded/imported archive */
+            RemoveTree(staging); /* partial extraction tree */
+            NSString *detail = errMsg.length > 0 ? errMsg
+                : (cErr ?: @"");
+            [self downloadFailed:[NSString stringWithFormat:
+                @"解压失败（%@）：%@", name, detail]];
         }
-        NSString *errMsg = nil;
-        NSString *cErr = rc != 0 ? [NSString stringWithUTF8String:err] : nil;
-        BOOL ok = (rc == 0) && [self mergeOnMain:staging err:&errMsg];
-        IosLog([NSString stringWithFormat:@"extract %@ rc=%d cErr=%@ mergeErr=%@",
-            name, rc, cErr ?: @"", errMsg ?: @""]);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (ok)
-            {
-                RemoveTree(path);
-                RemoveTree(staging);
-                self.assetIndex = self.assetIndex + 1;
-                [self downloadNextAsset];
-            }
-            else
-            {
-                RemoveTree(path);   /* downloaded/imported archive */
-                RemoveTree(staging); /* partial extraction tree */
-                NSString *detail = errMsg.length > 0 ? errMsg
-                    : (cErr ?: @"");
-                [self downloadFailed:[NSString stringWithFormat:
-                    @"解压失败（%@）：%@", name, detail]];
-            }
-        });
     });
 }
 

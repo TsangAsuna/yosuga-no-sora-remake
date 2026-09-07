@@ -123,6 +123,8 @@ public class BootstrapActivity extends Activity {
     private static final String TAG = "YosugaBootstrap";
     private static final String PREFS = "data_setup";
     private static final String KEY_CONFIRMED_VERSION = "confirmed_version";
+    /** Poison pill telling the extraction thread the download loop is done. */
+    private static final Object EXTRACT_DONE = new Object();
     // Injected at build time (gradle property defaultBaseUrl, set by CI from
     // the publishing repository). Local builds leave it empty: the download
     // field then requires the user to type the data-assets.json location.
@@ -133,6 +135,11 @@ public class BootstrapActivity extends Activity {
     private TextView progressView;
     private View progressFillView;
     private ImageView progressTrackView;
+    // Second (extract) progress bar: shown while an archive decompression
+    // runs (its own thread in the download pipeline), hidden when done.
+    private TextView extractTextView;
+    private View extractFillView;
+    private ImageView extractTrackView;
     private ImageView directLabelView;
     private ImageView ghProxyLabelView;
     private ImageView craftProxyLabelView;
@@ -318,6 +325,28 @@ public class BootstrapActivity extends Activity {
         progressFillView.setBackground(progressFill);
         progressFillView.setVisibility(View.GONE);
         canvas.addView(progressFillView, frame(0, 18, 214, 694));
+
+        // Extract progress bar (green), stacked directly above the download
+        // bar: text at y=622..666, track at y=668..686 (download track sits
+        // at y=690..716). Only visible while a decompression is running.
+        extractTrackView = makeAssetImage(R.drawable.progress_track);
+        extractTrackView.setVisibility(View.GONE);
+        canvas.addView(extractTrackView, frame(1215, 18, 210, 668));
+        extractFillView = new View(this);
+        GradientDrawable extractFill = new GradientDrawable();
+        extractFill.setColor(Color.rgb(76, 175, 80));
+        extractFill.setCornerRadius(7f);
+        extractFillView.setBackground(extractFill);
+        extractFillView.setVisibility(View.GONE);
+        canvas.addView(extractFillView, frame(0, 10, 214, 672));
+        extractTextView = new TextView(this);
+        extractTextView.setText("");
+        extractTextView.setTextSize(TypedValue.COMPLEX_UNIT_PX, 22f);
+        extractTextView.setTextColor(Color.rgb(200, 240, 200));
+        extractTextView.setGravity(android.view.Gravity.CENTER);
+        extractTextView.setBackgroundColor(Color.TRANSPARENT);
+        extractTextView.setVisibility(View.GONE);
+        canvas.addView(extractTextView, frame(1215, 44, 210, 622));
 
         // These fields are kept unattached so the downloader retains its
         // custom URL/proxy behaviour. They are exposed by long-pressing the
@@ -543,6 +572,34 @@ public class BootstrapActivity extends Activity {
         });
     }
 
+    /** Progress of the running decompression (own bar, shown until the
+     *  extraction finishes and hideExtractProgress() is called). */
+    private void setExtractProgress(String text, int percent) {
+        runOnUi(() -> {
+            extractTextView.setText(text);
+            extractTextView.setVisibility(View.VISIBLE);
+            extractTrackView.setVisibility(View.VISIBLE);
+            extractFillView.setVisibility(View.VISIBLE);
+            int clamped = Math.max(0, Math.min(100, percent));
+            FrameLayout.LayoutParams params =
+                    (FrameLayout.LayoutParams) extractFillView.getLayoutParams();
+            params.width = Math.round(1207f * clamped / 100f);
+            extractFillView.setLayoutParams(params);
+        });
+    }
+
+    private void hideExtractProgress() {
+        runOnUi(() -> {
+            extractTextView.setVisibility(View.GONE);
+            extractTrackView.setVisibility(View.GONE);
+            extractFillView.setVisibility(View.GONE);
+            FrameLayout.LayoutParams params =
+                    (FrameLayout.LayoutParams) extractFillView.getLayoutParams();
+            params.width = 0;
+            extractFillView.setLayoutParams(params);
+        });
+    }
+
     private void setMessage(String text) {
         runOnUi(() -> messageView.setText(text));
     }
@@ -566,6 +623,8 @@ public class BootstrapActivity extends Activity {
                         (FrameLayout.LayoutParams) progressFillView.getLayoutParams();
                 params.width = 0;
                 progressFillView.setLayoutParams(params);
+                // The transfer is over: make sure the extract bar is gone.
+                hideExtractProgress();
             }
             // Keep the screen ON while downloading / extracting so the
             // device does not go to sleep mid-transfer.
@@ -733,18 +792,77 @@ public class BootstrapActivity extends Activity {
                     for (String[] a : assets) total += Long.parseLong(a[2]);
                     long done = 0;
                     long startTime = System.currentTimeMillis();
+                    // Extraction pipeline: a dedicated thread pulls finished
+                    // archives off the queue while the download loop keeps
+                    // fetching the next one, so decompression no longer
+                    // stalls the transfer. The queue is tiny on purpose -
+                    // the disk then holds at most ~3 multi-GB zips.
+                    final java.util.concurrent.BlockingQueue<Object> extractQueue =
+                            new java.util.concurrent.ArrayBlockingQueue<>(2);
+                    final java.util.concurrent.atomic.AtomicReference<Exception>
+                            extractError = new java.util.concurrent.atomic.AtomicReference<>(null);
+                    final File extractDir = dataDir;
+                    final int packCount = assets.size();
+                    Thread extractor = new Thread(() -> {
+                        int seq = 0;
+                        while (true) {
+                            Object item;
+                            try {
+                                item = extractQueue.take();
+                            } catch (InterruptedException ie) {
+                                extractError.compareAndSet(null,
+                                        new IOException("解压线程被中断"));
+                                return;
+                            }
+                            if (item == EXTRACT_DONE) return;
+                            // Once extraction has failed, just drain the
+                            // queue so the producer never blocks forever.
+                            if (extractError.get() != null) continue;
+                            File zip = (File) item;
+                            seq++;
+                            try {
+                                extractZipTo(zip, extractDir,
+                                        "解压 " + zip.getName()
+                                                + "（" + seq + "/" + packCount + "）");
+                                zip.delete();
+                            } catch (Exception e) {
+                                extractError.compareAndSet(null, e);
+                            }
+                        }
+                    });
+                    extractor.start();
                     int index = 0;
-                    for (String[] asset : assets) {
-                        index++;
-                        String name = asset[0];
-                        String sha = asset[1];
-                        long size = Long.parseLong(asset[2]);
-                        File zip = new File(getCacheDir(), name);
-                        downloadFile(asset[3], zip, size, done, total, name, startTime);
-                        verifySha(zip, sha);
-                        extractZipTo(zip, dataDir, "解压 " + name);
-                        zip.delete();
-                        done += size;
+                    try {
+                        for (String[] asset : assets) {
+                            index++;
+                            // Stop pulling new archives once extraction has
+                            // failed; the wrap-up below reports the error.
+                            if (extractError.get() != null) break;
+                            String name = asset[0];
+                            String sha = asset[1];
+                            long size = Long.parseLong(asset[2]);
+                            File zip = new File(getCacheDir(), name);
+                            downloadFile(asset[3], zip, size, done, total, name, startTime);
+                            verifySha(zip, sha);
+                            extractQueue.put(zip);
+                            done += size;
+                        }
+                    } finally {
+                        try {
+                            extractQueue.put(EXTRACT_DONE);
+                        } catch (InterruptedException ie) {
+                            extractor.interrupt();
+                        }
+                        try {
+                            extractor.join();
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                    Exception ee = extractError.get();
+                    if (ee != null) {
+                        throw new IOException(
+                                ee.getMessage() == null ? "解压失败" : ee.getMessage(), ee);
                     }
                     installIntoDataDir(dataDir, parent);
                 } finally {
@@ -1301,7 +1419,7 @@ public class BootstrapActivity extends Activity {
                 }
                 done++;
                 if (done % 512 == 0 || done == total) {
-                    setProgress(label + "：" + done + " / " + total,
+                    setExtractProgress(label + "：" + done + " / " + total,
                             total > 0 ? done * 100 / total : 0);
                 }
             }
@@ -1376,7 +1494,7 @@ public class BootstrapActivity extends Activity {
         deleteTree(tmp);
         DataExtractService.start(this);
         try {
-            setProgress("正在解包 data.xp3…", 0);
+            setExtractProgress("正在解包 data.xp3…", 0);
             boolean started = nativeExtractXp3Start(xp3.getAbsolutePath(), tmp.getAbsolutePath());
             if (!started) throw new IOException("无法启动解包线程");
             while (true) {
@@ -1395,7 +1513,7 @@ public class BootstrapActivity extends Activity {
                         try {
                             int done = Integer.parseInt(parts[0]);
                             int total = Integer.parseInt(parts[1]);
-                            setProgress("正在解包 data.xp3：" + done + " / " + total,
+                            setExtractProgress("正在解包 data.xp3：" + done + " / " + total,
                                     total > 0 ? done * 100 / total : 0);
                         } catch (NumberFormatException ignored) {}
                     }

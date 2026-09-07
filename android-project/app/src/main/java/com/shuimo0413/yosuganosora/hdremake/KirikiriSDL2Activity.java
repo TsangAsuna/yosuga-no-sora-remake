@@ -7,6 +7,7 @@ import android.content.res.AssetFileDescriptor;
 import android.graphics.Color;
 import android.graphics.SurfaceTexture;
 import android.media.AudioAttributes;
+import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
@@ -71,6 +72,59 @@ public class KirikiriSDL2Activity extends SDLActivity {
     // bundled APK assets as the data source.
     private static native void nativeSetDataDir(String dataDir);
     private static native void nativeDetachExtractThread();
+    // Audio focus handoff: the native side pauses/resumes the FAudio/SDL
+    // playback device when another app (alarm, call, ...) takes the focus
+    // and when it comes back. See AndroidDataBridge.cpp.
+    private static native void nativeOnAudioFocusChange(int change);
+
+    // ---- Audio focus -------------------------------------------------------
+    private AudioManager audioManager;
+    private android.media.AudioFocusRequest audioFocusRequest;
+    private boolean focusRequested;
+
+    private final AudioManager.OnAudioFocusChangeListener audioFocusListener =
+            change -> nativeOnAudioFocusChange(change);
+
+    /** Claim the audio focus so the engine is told when an alarm/call/
+     *  other player takes it away (and when it is given back). Called from
+     *  onResume; idempotent. */
+    private void requestAudioFocusInternal() {
+        if (focusRequested) return;
+        if (audioManager == null) {
+            audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+        }
+        if (audioManager == null) return;
+        boolean granted;
+        if (Build.VERSION.SDK_INT >= 26) {
+            if (audioFocusRequest == null) {
+                audioFocusRequest = new android.media.AudioFocusRequest.Builder(
+                        AudioManager.AUDIOFOCUS_GAIN)
+                        .setAudioAttributes(new AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_GAME)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                                .build())
+                        .setOnAudioFocusChangeListener(audioFocusListener)
+                        .build();
+            }
+            granted = audioManager.requestAudioFocus(audioFocusRequest)
+                    == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+        } else {
+            granted = audioManager.requestAudioFocus(audioFocusListener,
+                    AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+                    == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+        }
+        focusRequested = granted;
+    }
+
+    private void abandonAudioFocusInternal() {
+        if (audioManager == null || !focusRequested) return;
+        if (Build.VERSION.SDK_INT >= 26 && audioFocusRequest != null) {
+            audioManager.abandonAudioFocusRequest(audioFocusRequest);
+        } else {
+            audioManager.abandonAudioFocus(audioFocusListener);
+        }
+        focusRequested = false;
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -265,6 +319,11 @@ public class KirikiriSDL2Activity extends SDLActivity {
         // method, so an in-session grant takes effect without a restart.
         if (sPublicSaveDir == null && hasPublicStorageAccess())
             getPublicSaveDataPath();
+        // Re-claim the audio focus every time we come to the front: the
+        // engine may have muted itself after a focus loss (alarm/call),
+        // and the only reliable recovery is a fresh focus grant (which
+        // triggers AUDIOFOCUS_GAIN on the native side).
+        requestAudioFocusInternal();
     }
 
     /**
@@ -628,6 +687,7 @@ public class KirikiriSDL2Activity extends SDLActivity {
 
     @Override
     protected void onDestroy() {
+        abandonAudioFocusInternal();
         releaseMovieOnUiThread(false);
         nativeDetachExtractThread();
         super.onDestroy();

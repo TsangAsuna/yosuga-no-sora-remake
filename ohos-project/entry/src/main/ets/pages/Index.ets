@@ -96,6 +96,11 @@ struct Index {
   @State bootState: number = 0;
   @State progressText: string = '';
   @State progressValue: number = 0;
+  // Second (extract) progress bar: visible while an archive decompression
+  // runs (download pipeline / xp3 unpack), hidden again once it finishes.
+  @State extractText: string = '';
+  @State extractValue: number = 0;
+  @State extractVisible: boolean = false;
   @State baseUrl: string = '';
   @State proxyUrl: string = '';
   @State selectedProxy: number = 1;
@@ -997,7 +1002,40 @@ struct Index {
     // result to the public data folder afterwards.
     const unzipTmp = this.sandboxFiles + '/unzip.tmp';
     await taskpool.execute(removeTreeTask, unzipTmp);
+    // Extraction pipeline: finished archives are chained onto a serial
+    // Promise chain while the download loop keeps fetching the next one -
+    // decompression no longer stalls the transfer. The chain runs ONE
+    // unzipTo at a time (startExtractTask/stopExtractTask pairs are then
+    // never interleaved) and unzips into the single shared staging dir.
+    const packCount = this.assets.length;
+    let extractDone = 0;
+    let extractFailed = false;
+    let extractChain: Promise<void> = Promise.resolve();
+    const runExtract = (name: string, tmpPath: string): void => {
+      extractChain = extractChain.then(async (): Promise<void> => {
+        this.showExtractBar('正在解压 ' + name +
+          '…（' + (extractDone + 1) + '/' + packCount + '）', 0);
+        await this.unzipTo(tmpPath, unzipTmp);
+        try {
+          fs.unlinkSync(tmpPath);
+        } catch (e) {
+          // ignore
+        }
+        extractDone++;
+        this.showExtractBar('正在解压 ' + name +
+          '…（' + extractDone + '/' + packCount + '）',
+          Math.floor(extractDone * 100 / Math.max(1, packCount)));
+      }).catch((e: Error) => {
+        extractFailed = true;
+        throw e as Error;
+      });
+    };
     for (const asset of this.assets) {
+      // Stop pulling new archives once extraction has failed; the wrap-up
+      // below reports the error.
+      if (extractFailed) {
+        break;
+      }
       const originalUrl = this.baseUrl + asset.name;
       const proxy = this.proxyUrl.trim();
       const url = proxy !== '' ? proxy + originalUrl : originalUrl;
@@ -1046,6 +1084,12 @@ struct Index {
         // stage) - landing there reads as a random black screen. Go back to
         // the setup page instead, where the error text and the proxy
         // buttons are visible for an immediate retry.
+        // A running extraction must finish first: the chained unzipTask
+        // writes into unzip.tmp, and a restart would wipe it mid-write.
+        await extractChain.catch((err: Error) => {
+          return;
+        });
+        this.hideExtractBar();
         await this.setScreenOn(false);
         this.progressValue = 0;
         this.bootState = 2;
@@ -1054,16 +1098,28 @@ struct Index {
           '若为网络问题，请返回引导页点击「gh-proxy」或「我的代理」切换加速后再下载';
         return;
       }
-      await this.unzipTo(tmp, unzipTmp);
-      try {
-        fs.unlinkSync(tmp);
-      } catch (e) {
-        // ignore
-      }
+      // Pipeline: queue the extraction and keep downloading the next pack
+      // right away - doneBytes tracks downloaded bytes only.
+      runExtract(asset.name, tmp);
       doneBytes += asset.size;
       this.progressValue = Math.min(99, Math.floor(doneBytes * 100 / Math.max(1, totalBytes)));
-      await this.delay(50);
     }
+    // All archives are downloading/downloaded: wait for the extraction
+    // chain to finish before installing the staged tree.
+    try {
+      await extractChain;
+    } catch (e) {
+      // Extraction failed: land on the setup page with the reason (same
+      // shape as the download-failure landing above).
+      this.hideExtractBar();
+      await this.setScreenOn(false);
+      this.progressValue = 0;
+      this.bootState = 2;
+      this.uiEpoch++;
+      this.message = '解压失败：' + JSON.stringify(e) + '\n请重试下载，或改用本地导入数据包';
+      return;
+    }
+    this.hideExtractBar();
     this.progressText = '正在准备游戏数据…';
     this.uiEpoch++;
     // A download delivers the COMPLETE dataset: replace whatever an older
@@ -1268,6 +1324,21 @@ struct Index {
     } finally {
       await this.stopExtractTask();
     }
+  }
+
+  /** Show/refresh the extract progress bar (its own track above the
+   *  download bar) while a decompression is running. */
+  private showExtractBar(text: string, value: number): void {
+    this.extractText = text;
+    this.extractValue = Math.max(0, Math.min(100, value));
+    this.extractVisible = true;
+  }
+
+  /** The extract bar disappears once extraction is done. */
+  private hideExtractBar(): void {
+    this.extractVisible = false;
+    this.extractValue = 0;
+    this.extractText = '';
   }
 
   /** True only when the Windows krkrz-style root contains data.xp3, or
@@ -2103,6 +2174,7 @@ struct Index {
     this.bootState = 7;
     this.progressText = '正在解包 data.xp3…';
     this.progressValue = 0;
+    this.showExtractBar('正在解包 data.xp3…', 0);
     this.message = '';
     this.uiEpoch++;
     this.log('extractAndFinalize begin: ' + xp3Path);
@@ -2203,12 +2275,15 @@ struct Index {
             if (isFinite(pd) && isFinite(pt) && pd >= 0 && pt > 0) {
               done = pd;
               total = pt;
-              this.progressValue = Math.floor(done * 100 / total);
-              this.progressText = '正在解包 data.xp3：' + done + ' / ' + total + ' 个文件';
+              this.showExtractBar('正在解包 data.xp3：' + done + ' / ' + total + ' 个文件',
+                Math.floor(done * 100 / total));
             }
           }
         }
       }
+      // Unpack finished: the extract bar disappears, the main bar takes
+      // over for the (quick) swap-in phase.
+      this.hideExtractBar();
       // Swap the extracted tree in, replacing ANY previous data tree
       // (partial or complete) - rename fails when the target exists.
       if (this.tryList(this.baseDir).indexOf('data') >= 0) {
@@ -2261,6 +2336,9 @@ struct Index {
       this.log('extractAndFinalize failed: ' + this.errText(e));
     } finally {
       await this.stopExtractTask();
+      // Every exit path (success, unpack error, native start failure)
+      // clears the extract bar here.
+      this.hideExtractBar();
       this.extracting = false;
     }
   }
@@ -2781,6 +2859,22 @@ struct Index {
             .width((this.progressValue * 0.6286).toFixed(2) + '%').height('1.67%')
             .position({ x: '11.15%', y: '64.26%' })
             .backgroundColor('#1783FF').borderRadius(9)
+          if (this.extractVisible) {
+            // Second (extract) progress bar, stacked directly above the
+            // download bar; green so the two are easy to tell apart.
+            Text(this.extractText).width('63.28%').height('3.2%')
+              .position({ x: '10.94%', y: '58.35%' })
+              .fontSize(15).fontColor('#C8E6C9').maxLines(1)
+              .textAlign(TextAlign.Center)
+            Image($rawfile('progress_track.png'))
+              .width('63.28%').height('2.41%')
+              .position({ x: '10.94%', y: '61.3%' })
+              .objectFit(ImageFit.Fill)
+            Column()
+              .width((this.extractValue * 0.6286).toFixed(2) + '%').height('1.67%')
+              .position({ x: '11.15%', y: '61.67%' })
+              .backgroundColor('#4CAF50').borderRadius(9)
+          }
           if (this.activeAction === 1) {
             Image($rawfile('download_label_active.png'))
               .width('7.08%').height('5.28%')
