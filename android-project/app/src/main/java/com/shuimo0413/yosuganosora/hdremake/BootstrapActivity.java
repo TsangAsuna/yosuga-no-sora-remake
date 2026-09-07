@@ -77,6 +77,18 @@ public class BootstrapActivity extends Activity {
     private static final int PROXY_DIRECT = 1;
     private static final int PROXY_GH = 2;
     private static final int PROXY_CRAFT = 3;
+    // Download accelerator nodes: (display name, proxy prefix). The
+    // prefix is prepended to the full GitHub URL. Empty prefix = direct.
+    // axisnow/others go here once a verified prefix is provided.
+    private static final String[][] ACCEL_NODES = {
+        {"GitHub 直链", ""},
+        {"GH-PROXY.CN", "https://gh-proxy.cn/"},
+        {"GH-PROXY.COM", "https://gh-proxy.com/"},
+        {"GHPROXY.NET", "https://ghproxy.net/"},
+        {"CRAFT-HELLO", "https://proxy.craft-hello.top/proxy/"}
+    };
+    // Node latency cache (ms); -1 = unknown/failed. Index matches ACCEL_NODES.
+    private static final long[] NODE_LATENCY = new long[ACCEL_NODES.length];
     private static final int ACTION_NONE = 0;
     private static final int ACTION_DOWNLOAD = 1;
     private static final int ACTION_IMPORT = 2;
@@ -538,12 +550,28 @@ public class BootstrapActivity extends Activity {
         url.setSingleLine(true);
         url.setText(baseUrlInput.getText());
         url.setHint(baseUrlInput.getHint());
-        fields.addView(url, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         EditText proxy = new EditText(this);
         proxy.setSingleLine(true);
         proxy.setText(proxyInput.getText());
         proxy.setHint(proxyInput.getHint());
+        // Accelerator nodes with live latency, refreshed every 5s.
+        final LinearLayout nodeBox = new LinearLayout(this);
+        nodeBox.setOrientation(LinearLayout.VERTICAL);
+        final java.util.List<Button> nodeRows = new java.util.ArrayList<>();
+        for (int i = 0; i < ACCEL_NODES.length; i++) {
+            final int nodeIndex = i;
+            Button row = new Button(this);
+            row.setAllCaps(false);
+            row.setPadding(padding / 2, padding / 4, padding / 2, padding / 4);
+            row.setOnClickListener(v -> proxy.setText(ACCEL_NODES[nodeIndex][1]));
+            nodeRows.add(row);
+            nodeBox.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        fields.addView(nodeBox, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        fields.addView(url, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         fields.addView(proxy, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         AlertDialog dialog = new AlertDialog.Builder(this)
@@ -552,12 +580,38 @@ public class BootstrapActivity extends Activity {
                 .setView(fields)
                 .setPositiveButton("确定", null)
                 .create();
-        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                .setOnClickListener(v -> {
-                    baseUrlInput.setText(url.getText());
-                    proxyInput.setText(proxy.getText());
-                    dialog.dismiss();
-                }));
+        // Live node latency every 5s while the dialog is open.
+        final android.os.Handler nodePinger = new android.os.Handler(android.os.Looper.getMainLooper());
+        final Runnable pingLoop = new Runnable() {
+            @Override
+            public void run() {
+                for (int i = 0; i < ACCEL_NODES.length; i++) {
+                    final int nodeIndex = i;
+                    final Button row = nodeRows.get(i);
+                    new Thread(() -> {
+                        long ms = pingNodeLatency(ACCEL_NODES[nodeIndex][1]);
+                        NODE_LATENCY[nodeIndex] = ms;
+                        runOnUi(() -> {
+                            String lat = ms < 0 ? "超时" : (ms + " ms");
+                            row.setText(ACCEL_NODES[nodeIndex][0] + "  " + lat);
+                        });
+                    }).start();
+                }
+                nodePinger.postDelayed(this, 5000);
+            }
+        };
+        dialog.setOnShowListener(ignored -> {
+            nodePinger.post(pingLoop);
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                    .setOnClickListener(v -> {
+                        baseUrlInput.setText(url.getText());
+                        proxyInput.setText(proxy.getText());
+                        nodePinger.removeCallbacksAndMessages(null);
+                        dialog.dismiss();
+                    });
+        });
+        dialog.setOnDismissListener(ignored -> nodePinger.removeCallbacksAndMessages(null));
+
         dialog.show();
     }
 
@@ -938,14 +992,39 @@ public class BootstrapActivity extends Activity {
         final int threads = 6;
         final long chunk = 8L * 1024 * 1024;
         final long nChunks = (size + chunk - 1) / chunk;
-        final AtomicInteger next = new AtomicInteger(0);
         final AtomicLong doneSum = new AtomicLong(0);
         final AtomicReference<IOException> failure = new AtomicReference<>(null);
-        // Set when the server answers 200 instead of 206: it does not support
-        // Range, so exactly one worker performs a single full download and the
-        // others bail out (their positional writes would race the full write).
+        // Resume support: a previously interrupted run leaves complete chunks
+        // in place (zip data never starts with a zero byte, so a sparse hole
+        // reads back as zeros and is treated as unfinished). Chunks already
+        // fully written are skipped; only the missing ones are queued.
+        java.util.Queue<Integer> pendingChunks = new java.util.concurrent.ConcurrentLinkedQueue<>();
+        final java.util.concurrent.atomic.AtomicLong resumedBytes = new java.util.concurrent.atomic.AtomicLong(0);
+        final FileChannel resumeChannel = new RandomAccessFile(dest, "rw").getChannel();
+        try {
+            byte[] probe = new byte[16];
+            for (int idx = 0; idx < nChunks; idx++) {
+                long start = idx * chunk;
+                long clen = Math.min(chunk, size - start);
+                int got = resumeChannel.read(java.nio.ByteBuffer.wrap(probe), start);
+                boolean complete = false;
+                if (got == probe.length) {
+                    boolean allZero = true;
+                    for (byte b : probe) if (b != 0) { allZero = false; break; }
+                    if (!allZero) complete = true;
+                }
+                if (complete) {
+                    resumedBytes.addAndGet(clen);
+                } else {
+                    pendingChunks.add(idx);
+                }
+            }
+        } finally {
+            resumeChannel.close();
+        }
         final java.util.concurrent.atomic.AtomicBoolean rangeSupported =
                 new java.util.concurrent.atomic.AtomicBoolean(true);
+        doneSum.set(resumedBytes.get());
         final FileChannel channel = new RandomAccessFile(dest, "rw").getChannel();
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         try {
@@ -955,8 +1034,9 @@ public class BootstrapActivity extends Activity {
                     byte[] buf = new byte[1 << 16];
                     while (failure.get() == null) {
                         if (!rangeSupported.get()) return;
-                        int idx = next.getAndIncrement();
-                        if (idx >= nChunks) return;
+                        Integer queued = pendingChunks.poll();
+                        if (queued == null) return;
+                        int idx = queued;
                         long start = idx * chunk;
                         long end = Math.min(start + chunk, size) - 1;
                         boolean got = false;
@@ -989,7 +1069,7 @@ public class BootstrapActivity extends Activity {
                                     if (pos != size) {
                                         throw new IOException("short download: " + pos);
                                     }
-                                    doneSum.addAndGet(size);
+                                    doneSum.addAndGet(size - resumedBytes.get());
                                     got = true;
                                     int pct = total > 0 ? (int) (doneSum.get() * 100 / total) : 0;
                                     setProgress(String.format(Locale.US,
@@ -1066,6 +1146,31 @@ public class BootstrapActivity extends Activity {
         IOException err = failure.get();
         if (err != null) {
             throw err;
+        }
+    }
+
+    /** Returns RTT in ms for a proxy prefix (small Range GET), or -1. */
+    private static long pingNodeLatency(String proxyPrefix) {
+        final String probeUrl = proxyPrefix
+                + "https://raw.githubusercontent.com/krkrz/krkrz/master/README.md";
+        long t0 = System.currentTimeMillis();
+        try {
+            HttpURLConnection conn = (HttpURLConnection) new java.net.URL(probeUrl).openConnection();
+            conn.setConnectTimeout(6000);
+            conn.setReadTimeout(6000);
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "YosugaSoraHD/1.0");
+            conn.setRequestProperty("Range", "bytes=0-0");
+            int code = conn.getResponseCode();
+            try (InputStream in = conn.getInputStream()) {
+                byte[] tmp = new byte[64];
+                while (in.read(tmp) >= 0) { /* drain */ }
+            }
+            conn.disconnect();
+            if (code != 200 && code != 206) return -1;
+            return System.currentTimeMillis() - t0;
+        } catch (Exception e) {
+            return -1;
         }
     }
 
