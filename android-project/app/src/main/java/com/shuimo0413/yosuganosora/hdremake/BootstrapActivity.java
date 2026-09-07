@@ -98,7 +98,7 @@ public class BootstrapActivity extends Activity {
     private static final int ACTION_DOWNLOAD = 1;
     private static final int ACTION_IMPORT = 2;
     private static final String FALLBACK_BASE_URL =
-            "https://github.com/shuimo0413/yosuga-no-sora-remake/releases/latest/download/";
+            "https://github.com/WarSkyGod/yosuga-no-sora-remake/releases/latest/download/";
 
     /** Keeps the bootstrap artwork and its hit regions in one fixed canvas. */
     private static final class FixedAspectLayout extends FrameLayout {
@@ -1210,29 +1210,17 @@ public class BootstrapActivity extends Activity {
             ACCEL_NODES = loaded;
             NODE_LATENCY = new long[loaded.length];
             java.util.Arrays.fill(NODE_LATENCY, -1);
-            // Probe every node and auto-pick the fastest reachable one into
-            // the proxy field unless the user already typed a custom prefix.
-            if (sCurrent != null && sCurrent.proxyInput != null
-                    && sCurrent.proxyInput.getText().toString().trim().isEmpty()) {
-                long bestLat = Long.MAX_VALUE;
-                int bestIndex = -1;
+            // Probe every node so the settings dialog can show live latency.
+            // Deliberately NO auto-selection: the GitHub direct / GH-PROXY /
+            // CRAFT-HELLO buttons keep their manual semantics (only the
+            // selected one prefixes the upstream data URLs).
+            if (sCurrent != null && sCurrent.proxyInput != null) {
                 for (int i = 0; i < loaded.length; i++) {
                     final int nodeIndex = i;
                     try {
-                        long ms = pingNodeLatency(loaded[nodeIndex][1]);
-                        NODE_LATENCY[nodeIndex] = ms;
-                        if (ms >= 0 && ms < bestLat) {
-                            bestLat = ms;
-                            bestIndex = nodeIndex;
-                        }
+                        NODE_LATENCY[nodeIndex] = pingNodeLatency(loaded[nodeIndex][1]);
                     } catch (Exception ignored) {
                     }
-                }
-                if (bestIndex >= 0) {
-                    final int sel = bestIndex;
-                    final String[][] nodes = loaded;
-                    sCurrent.runOnUiThread(() ->
-                            sCurrent.proxyInput.setText(nodes[sel][1]));
                 }
             }
         }).start();
