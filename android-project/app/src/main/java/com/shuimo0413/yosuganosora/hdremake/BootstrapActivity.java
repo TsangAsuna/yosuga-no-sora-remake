@@ -628,6 +628,15 @@ public class BootstrapActivity extends Activity {
             nodePinger.post(pingLoop);
             dialog.getButton(AlertDialog.BUTTON_POSITIVE)
                     .setOnClickListener(v -> {
+                        String proxyText = proxy.getText().toString().trim();
+                        if (!proxyText.isEmpty()
+                                && !proxyText.startsWith("https://")
+                                && !proxyText.startsWith("http://")) {
+                            Toast.makeText(this,
+                                    "请勿填入无效加速前缀（应形如 https://gh-proxy.org/）",
+                                    Toast.LENGTH_SHORT).show();
+                            return; // keep the dialog open
+                        }
                         baseUrlInput.setText(url.getText());
                         proxyInput.setText(proxy.getText());
                         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
