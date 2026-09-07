@@ -85,8 +85,10 @@ public class BootstrapActivity extends Activity {
     private static final String[][] DEFAULT_NODES = {
         {"GitHub 直链", ""},
         {"GH-PROXY.CN", "https://gh-proxy.cn/"},
-        {"GH-PROXY.COM", "https://gh-proxy.com/"},
-        {"GHPROXY.NET", "https://ghproxy.net/"},
+        {"GH-PROXY.ORG", "https://gh-proxy.org/"},
+        {"CDN.GH-PROXY.ORG", "https://cdn.gh-proxy.org/"},
+        {"AXISNOW.GH-PROXY.ORG", "https://axisnow.gh-proxy.org/"},
+        {"V6.GH-PROXY.ORG", "https://v6.gh-proxy.org/"},
         {"CRAFT-HELLO", "https://proxy.craft-hello.top/proxy/"}
     };
     // Live node list; starts as the built-in fallback and is replaced by the
@@ -98,7 +100,7 @@ public class BootstrapActivity extends Activity {
     private static final int ACTION_DOWNLOAD = 1;
     private static final int ACTION_IMPORT = 2;
     private static final String FALLBACK_BASE_URL =
-            "https://github.com/WarSkyGod/yosuga-no-sora-remake/releases/latest/download/";
+            "https://github.com/WarSkyGod/yosuga-no-sora-remake/releases/download/v1.0.6/";
 
     /** Keeps the bootstrap artwork and its hit regions in one fixed canvas. */
     private static final class FixedAspectLayout extends FrameLayout {
@@ -569,7 +571,16 @@ public class BootstrapActivity extends Activity {
             Button row = new Button(this);
             row.setAllCaps(false);
             row.setPadding(padding / 2, padding / 4, padding / 2, padding / 4);
-            row.setOnClickListener(v -> proxy.setText(ACCEL_NODES[nodeIndex][1]));
+            // Clicking a node = apply it, close the settings dialog and
+            // immediately start the download with that node (the proxy
+            // input is overwritten, so the download cannot silently reuse
+            // a previously selected/default source).
+            row.setOnClickListener(v -> {
+                proxy.setText(ACCEL_NODES[nodeIndex][1]);
+                proxyInput.setText(ACCEL_NODES[nodeIndex][1]);
+                dialog.dismiss();
+                startDownload();
+            });
             nodeRows.add(row);
             nodeBox.addView(row, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -1165,6 +1176,22 @@ public class BootstrapActivity extends Activity {
      *  typed a custom prefix). */
     private static void refreshAcceleratorNodes() {
         new Thread(() -> {
+            final long REFRESH_MS = 10L * 60 * 1000; // re-pull node list every 10 min
+            while (!Thread.currentThread().isInterrupted()) {
+                try {
+                    refreshAcceleratorNodesOnce();
+                } catch (Exception ignored) {
+                }
+                try {
+                    Thread.sleep(REFRESH_MS);
+                } catch (InterruptedException ie) {
+                    return;
+                }
+            }
+        }).start();
+    }
+
+    private static void refreshAcceleratorNodesOnce() {
             final String repo = "TsangAsuna/yosuga-no-sora-remake";
             final String[] sources = {
                 "https://cdn.jsdelivr.net/gh/" + repo + "@main/accelerator-nodes.json",
@@ -1223,7 +1250,6 @@ public class BootstrapActivity extends Activity {
                     }
                 }
             }
-        }).start();
     }
 
     /** Returns RTT in ms for a proxy prefix (small Range GET), or -1. */
