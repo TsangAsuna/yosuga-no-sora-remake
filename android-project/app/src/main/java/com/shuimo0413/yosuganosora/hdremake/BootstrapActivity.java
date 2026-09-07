@@ -571,7 +571,16 @@ public class BootstrapActivity extends Activity {
             Button row = new Button(this);
             row.setAllCaps(false);
             row.setPadding(padding / 2, padding / 4, padding / 2, padding / 4);
-            row.setOnClickListener(v -> proxy.setText(ACCEL_NODES[nodeIndex][1]));
+            // Clicking a node = apply it, close the settings dialog and
+            // immediately start the download with that node (the proxy
+            // input is overwritten, so the download cannot silently reuse
+            // a previously selected/default source).
+            row.setOnClickListener(v -> {
+                proxy.setText(ACCEL_NODES[nodeIndex][1]);
+                proxyInput.setText(ACCEL_NODES[nodeIndex][1]);
+                dialog.dismiss();
+                startDownload();
+            });
             nodeRows.add(row);
             nodeBox.addView(row, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -1167,6 +1176,22 @@ public class BootstrapActivity extends Activity {
      *  typed a custom prefix). */
     private static void refreshAcceleratorNodes() {
         new Thread(() -> {
+            final long REFRESH_MS = 10L * 60 * 1000; // re-pull node list every 10 min
+            while (!Thread.currentThread().isInterrupted()) {
+                try {
+                    refreshAcceleratorNodesOnce();
+                } catch (Exception ignored) {
+                }
+                try {
+                    Thread.sleep(REFRESH_MS);
+                } catch (InterruptedException ie) {
+                    return;
+                }
+            }
+        }).start();
+    }
+
+    private static void refreshAcceleratorNodesOnce() {
             final String repo = "TsangAsuna/yosuga-no-sora-remake";
             final String[] sources = {
                 "https://cdn.jsdelivr.net/gh/" + repo + "@main/accelerator-nodes.json",
@@ -1225,7 +1250,6 @@ public class BootstrapActivity extends Activity {
                     }
                 }
             }
-        }).start();
     }
 
     /** Returns RTT in ms for a proxy prefix (small Range GET), or -1. */
