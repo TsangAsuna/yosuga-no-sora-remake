@@ -571,6 +571,9 @@ public class BootstrapActivity extends Activity {
         final LinearLayout nodeBox = new LinearLayout(this);
         nodeBox.setOrientation(LinearLayout.VERTICAL);
         final java.util.List<Button> nodeRows = new java.util.ArrayList<>();
+        // dialog is created after the node rows; a one-slot array keeps the
+        // reference effectively-final for the click lambdas below.
+        final AlertDialog[] dialogRef = new AlertDialog[1];
         for (int i = 0; i < ACCEL_NODES.length; i++) {
             final int nodeIndex = i;
             Button row = new Button(this);
@@ -586,7 +589,7 @@ public class BootstrapActivity extends Activity {
                 getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                         .putString(KEY_PROXY_PREFIX, ACCEL_NODES[nodeIndex][1])
                         .apply();
-                dialog.dismiss();
+                if (dialogRef[0] != null) dialogRef[0].dismiss();
                 startDownload();
             });
             nodeRows.add(row);
@@ -605,6 +608,7 @@ public class BootstrapActivity extends Activity {
                 .setView(fields)
                 .setPositiveButton("确定", null)
                 .create();
+        dialogRef[0] = dialog;
         // Live node latency every 5s while the dialog is open.
         final android.os.Handler nodePinger = new android.os.Handler(android.os.Looper.getMainLooper());
         final Runnable pingLoop = new Runnable() {
