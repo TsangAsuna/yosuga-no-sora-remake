@@ -1171,10 +1171,23 @@ void tTJSNI_Window::ResetDrawDevice()
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::FullScreenGuard() const {
+#ifdef __OHOS__
+	/* On HarmonyOS the OS-level fullscreen (window.setFullScreen driven
+	 * through the SDL OHOS bridge) lives entirely outside the engine window
+	 * concept - the game canvas stays a 16:9 letterbox layer either way.
+	 * The legacy guard rejects window property changes while an exclusive
+	 * fullscreen mode is active, which is not applicable here: the game
+	 * scripts legitimately restore the saved fullscreen state during
+	 * startup and then touch window properties ('visible = true' in
+	 * Window.tjs), which the guard answered with "Invalid property in
+	 * fullscreen" and killed the engine right at startup. */
+	return;
+#else
 	if( Form ) {
 		if(Form->GetFullScreenMode())
 			TVPThrowExceptionMessage(TVPInvalidPropertyInFullScreen);
 	}
+#endif
 }
 //---------------------------------------------------------------------------
 void tTJSNI_Window::PostInputEvent(const ttstr &name, iTJSDispatch2 * params)

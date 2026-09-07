@@ -1274,11 +1274,13 @@ struct Index {
    * user-facing error string. */
   private async checkFreeSpace(path: string, needBytes: number): Promise<string> {
     try {
-      const st = await fs.statfs(path);
-      const freeBytes = st.bavail * st.bsize;
+      // Free space via the native statvfs bridge: @ohos.file.statfs is not
+      // present in the API 12 OpenHarmony SDK declarations and fs.statfs
+      // only exists on newer API levels than compileSdkVersion 12.
+      const freeBytes = entryNapi.freeDiskSpace(path) as number;
       this.log('free space at ' + path + ': ' + this.fmtSize(freeBytes) +
         ' avail, need ' + this.fmtSize(needBytes));
-      if (freeBytes < needBytes) {
+      if (freeBytes >= 0 && freeBytes < needBytes) {
         try {
           entryNapi.diagLog('shell: LOW SPACE ' + this.fmtSize(freeBytes) +
             ' free, need ' + this.fmtSize(needBytes));
@@ -2707,11 +2709,17 @@ struct Index {
                 this.log('onLoad exception: ' + JSON.stringify(e));
               }
             })
-            // Strict 16:9 canvas fitted inside the window (letterboxed on
-            // 3:2 HarmonyOS PC / tablet screens instead of being stretched
-            // edge to edge). Size driven by the root stack's onAreaChange.
-            .width(this.gameW)
-            .height(this.gameH)
+            // Fill the whole window: the engine renders the game's 16:9
+            // layer (1920x1080) letterboxed into whatever surface size it
+            // gets, so the surface must NOT be resized through ArkTS state
+            // when fullscreen toggles - the root-driven double relayout
+            // (root stack 100%x100% AND this.gameW/H) destroyed the surface
+            // twice in one frame and the render thread SEGV'd on the stale
+            // one (cppcrash right after the fullscreen ack). This mirrors
+            // the working v1.0.4 layout; only the bootstrap UI keeps the
+            // fitted 16:9 gameW/gameH canvas.
+            .width('100%')
+            .height('100%')
             // Report the real component size to the engine: the native
             // OnSurfaceChanged callback never fires on this system, so
             // without this the SDL window size stays at the fallback and
@@ -2781,10 +2789,11 @@ struct Index {
           // itself never receives them (libace_compatible crashes processing
           // XComponent touches). Forward to the SDL backend via napi.
           Column()
-            // Same fitted 16:9 canvas as the XComponent so overlay vp coords
-            // map directly onto the SDL window coordinate space.
-            .width(this.gameW)
-            .height(this.gameH)
+            // Full-window overlay matching the full-window XComponent: touch
+            // px coords then line up with the surface px space the engine
+            // scales from (setSurfaceSize), edge letterbox included.
+            .width('100%')
+            .height('100%')
             .backgroundColor('#00000000')
             .zIndex(4)
             .onTouch((event: TouchEvent) => {

@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <string>
 #include <unistd.h>
+#include <sys/statvfs.h>
 
 #include <filemanagement/file_uri/oh_file_uri.h>
 
@@ -391,6 +392,38 @@ static napi_value DiagLog(napi_env env, napi_callback_info info)
 	return nullptr;
 }
 
+/* freeDiskSpace(path): available bytes on the filesystem holding path
+ * (statvfs), or -1 when the probe fails. ArkTS has no statfs at
+ * compileSdkVersion 12, so the write-path free-space check is bridged
+ * through here. */
+static napi_value FreeDiskSpace(napi_env env, napi_callback_info info)
+{
+	size_t argc = 1;
+	napi_value args[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+	size_t len = 0;
+	double result = -1.0;
+	if (argc >= 1 &&
+		napi_get_value_string_utf8(env, args[0], nullptr, 0, &len) == napi_ok)
+	{
+		std::vector<char> text(len + 1, '\0');
+		size_t copied = 0;
+		if (napi_get_value_string_utf8(env, args[0], text.data(),
+			len + 1, &copied) == napi_ok)
+		{
+			struct statvfs st;
+			memset(&st, 0, sizeof(st));
+			if (statvfs(text.data(), &st) == 0)
+			{
+				result = (double)st.f_bavail * (double)st.f_bsize;
+			}
+		}
+	}
+	napi_value out = nullptr;
+	napi_create_double(env, result, &out);
+	return out;
+}
+
 /* ---- data.xp3 extraction ------------------------------------------------ */
 
 namespace {
@@ -588,6 +621,7 @@ static napi_value Init(napi_env env, napi_value exports)
 		{"pollFullscreen", nullptr, PollFullscreen, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"ackFullscreen", nullptr, AckFullscreen, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"diagLog", nullptr, DiagLog, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"freeDiskSpace", nullptr, FreeDiskSpace, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"setSurfaceSize", nullptr, SetSurfaceSize, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"extractXp3Start", nullptr, ExtractXp3Start, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"uriToPath", nullptr, UriToPath, nullptr, nullptr, nullptr, napi_default, nullptr},
