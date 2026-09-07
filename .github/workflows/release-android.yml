@@ -25,6 +25,11 @@ name: Release Android SDL2
           - armeabi-v7a
           - x86
           - x86_64
+      data_base_url:
+        description: 'In-app game-data download root (e.g. https://github.com/WarSkyGod/yosuga-no-sora-remake/releases/download/v1.0.6/). Empty = this repo.'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -261,13 +266,18 @@ jobs:
         shell: bash
         env:
           ABI: ${{ inputs.abi || 'arm64-v8a' }}
+          INPUT_DATA_BASE_URL: ${{ inputs.data_base_url }}
           ORG_GRADLE_PROJECT_androidVersionName: ${{ steps.release.outputs.version-name }}
           ORG_GRADLE_PROJECT_androidVersionCode: ${{ steps.release.outputs.version-code }}
-          # Publishing repo as the in-app downloader's default base URL
-          # (bootstrap falls back to asking the user when empty).
-          ORG_GRADLE_PROJECT_defaultBaseUrl: https://github.com/${{ github.repository }}/releases/latest/download/
         run: |
           set -euo pipefail
+          # In-app downloader's default data root: workflow override (e.g. an
+          # upstream data source) or this repository's Release by default.
+          if [[ -n "$INPUT_DATA_BASE_URL" ]]; then
+            export ORG_GRADLE_PROJECT_defaultBaseUrl="$INPUT_DATA_BASE_URL"
+          else
+            export ORG_GRADLE_PROJECT_defaultBaseUrl="https://github.com/${{ github.repository }}/releases/latest/download/"
+          fi
           chmod +x gradlew
           ./gradlew --no-daemon --stacktrace :app:assembleRelease "-P$ABI"
 

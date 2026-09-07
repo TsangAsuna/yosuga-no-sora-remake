@@ -15,6 +15,11 @@ name: Release iOS SDL2
         required: true
         default: true
         type: boolean
+      data_base_url:
+        description: 'In-app game-data download root (e.g. https://github.com/WarSkyGod/yosuga-no-sora-remake/releases/download/v1.0.6/). Empty = this repo.'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -246,12 +251,19 @@ jobs:
           IOS_EMBED_DATA: 'OFF'
           # Minimum supported release: iOS 13 (the UIScene lifecycle floor).
           IOS_DEPLOYMENT_TARGET: '13.0'
+          INPUT_DATA_BASE_URL: ${{ inputs.data_base_url }}
         run: |
           set -euo pipefail
-          # Write the current repository's Release download root into the
-          # bundle so forks/renames track the right repo without editing code.
-          printf '{"baseUrl":"https://github.com/%s/releases/latest/download/","releaseTag":"%s"}\n' \
-            "${{ github.repository }}" "${{ steps.release.outputs.tag }}" \
+          # Write the game-data download root into the bundle. Defaults to
+          # this repository's Release; a workflow caller can point at an
+          # upstream data source instead (no data re-upload needed).
+          if [[ -n "$INPUT_DATA_BASE_URL" ]]; then
+            base_url="$INPUT_DATA_BASE_URL"
+          else
+            base_url="https://github.com/${{ github.repository }}/releases/latest/download/"
+          fi
+          printf '{"baseUrl":"%s","releaseTag":"%s"}\n' \
+            "$base_url" "${{ steps.release.outputs.tag }}" \
             > src/resources/ios/default-manifest.json
           cat src/resources/ios/default-manifest.json
           ./ios-project/generate.sh
