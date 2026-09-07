@@ -941,6 +941,11 @@ public class BootstrapActivity extends Activity {
         final AtomicInteger next = new AtomicInteger(0);
         final AtomicLong doneSum = new AtomicLong(0);
         final AtomicReference<IOException> failure = new AtomicReference<>(null);
+        // Set when the server answers 200 instead of 206: it does not support
+        // Range, so exactly one worker performs a single full download and the
+        // others bail out (their positional writes would race the full write).
+        final java.util.concurrent.atomic.AtomicBoolean rangeSupported =
+                new java.util.concurrent.atomic.AtomicBoolean(true);
         final FileChannel channel = new RandomAccessFile(dest, "rw").getChannel();
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         try {
@@ -949,6 +954,7 @@ public class BootstrapActivity extends Activity {
                 futures.add(pool.submit(() -> {
                     byte[] buf = new byte[1 << 16];
                     while (failure.get() == null) {
+                        if (!rangeSupported.get()) return;
                         int idx = next.getAndIncrement();
                         if (idx >= nChunks) return;
                         long start = idx * chunk;
@@ -968,6 +974,34 @@ public class BootstrapActivity extends Activity {
                                 conn.setRequestProperty("Range",
                                         "bytes=" + start + "-" + end);
                                 int code = conn.getResponseCode();
+                                if (code == 200 && rangeSupported.compareAndSet(true, false)) {
+                                    // No Range support: this worker downloads
+                                    // the whole file once; the rest exit above.
+                                    long pos = 0;
+                                    try (InputStream in = new BufferedInputStream(
+                                            conn.getInputStream())) {
+                                        int n;
+                                        while ((n = in.read(buf)) > 0) {
+                                            channel.write(java.nio.ByteBuffer.wrap(buf, 0, n), pos);
+                                            pos += n;
+                                        }
+                                    }
+                                    if (pos != size) {
+                                        throw new IOException("short download: " + pos);
+                                    }
+                                    doneSum.addAndGet(size);
+                                    got = true;
+                                    int pct = total > 0 ? (int) (doneSum.get() * 100 / total) : 0;
+                                    setProgress(String.format(Locale.US,
+                                            "正在下载 %s  %d%%  %s / %s  (%s)",
+                                            label, Math.min(99, pct), fmtSize(doneBase + doneSum.get()),
+                                            fmtSize(total),
+                                            fmtSize((long) ((doneBase + doneSum.get())
+                                                    / Math.max(0.001,
+                                                            (System.currentTimeMillis() - startTime) / 1000.0))) + "/s"),
+                                            Math.min(99, pct));
+                                    continue;
+                                }
                                 if (code != 206) {
                                     throw new IOException("HTTP " + code);
                                 }
@@ -1050,7 +1084,11 @@ public class BootstrapActivity extends Activity {
     }
 
     private void verifySha(File file, String expectedSha) throws IOException {
-        if (expectedSha == null || expectedSha.isEmpty()) return;
+        if (expectedSha == null || expectedSha.isEmpty()) {
+            // Trust boundary: a manifest entry without a digest must not let
+            // a corrupt transfer through silently.
+            throw new IOException("清单缺少 SHA-256 校验值，请更换下载源");
+        }
         MessageDigest digest;
         try {
             digest = MessageDigest.getInstance("SHA-256");

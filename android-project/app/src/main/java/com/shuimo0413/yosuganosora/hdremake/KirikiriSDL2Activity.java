@@ -48,6 +48,11 @@ public class KirikiriSDL2Activity extends SDLActivity {
     // True when a playing OP movie was paused because the app went to the
     // background; restored (with a delay) when the app returns.
     private boolean backgroundPausedMovie;
+    // Pending delayed audio/movie resume; cancelled in onPause so a
+    // quick background->foreground->background flip (or process teardown
+    // while the foreground DataExtractService keeps the process alive)
+    // never lets the 0.5s callback unpause audio after we already left.
+    private Runnable pendingResume;
     private float movieVolume = 1.0f;
     // Movie display rectangle in the SDL surface's coordinate space; the
     // engine reports it through setMovieBounds().  A zero-size rectangle
@@ -321,6 +326,14 @@ public class KirikiriSDL2Activity extends SDLActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        // Cancel any pending delayed resume first: a foreground<->background
+        // flip inside the 0.5s window (or an Activity teardown that keeps the
+        // process alive via the foreground DataExtractService) must not let
+        // the later callback unpause audio after we have already paused.
+        if (pendingResume != null) {
+            if (mSurface != null) mSurface.removeCallbacks(pendingResume);
+            pendingResume = null;
+        }
         // iOS parity: no background audio.  Pause the SDL/FAudio devices
         // and any playing OP movie, so BGM/SE stop when the app leaves the
         // foreground instead of playing on in the background.
@@ -349,13 +362,18 @@ public class KirikiriSDL2Activity extends SDLActivity {
         // before unpausing the SDL devices, matching the iOS late
         // relayout/resume timing and avoiding a pop on re-entry.
         if (mSurface != null) {
-            mSurface.postDelayed(() -> {
+            pendingResume = () -> {
+                pendingResume = null;
                 nativeOnAppForeground();
                 if (backgroundPausedMovie) {
                     backgroundPausedMovie = false;
+                    // Match playMovie() semantics so the engine-side movie
+                    // state stays consistent with the MediaPlayer.
+                    playMovieWhenPrepared = true;
                     if (moviePlayer != null && moviePrepared) moviePlayer.start();
                 }
-            }, 500);
+            };
+            mSurface.postDelayed(pendingResume, 500);
         }
     }
 
