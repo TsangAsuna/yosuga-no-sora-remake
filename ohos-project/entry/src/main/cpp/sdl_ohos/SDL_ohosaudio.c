@@ -174,16 +174,18 @@ static int32_t OHOSAUDIO_InterruptCallback(OH_AudioRenderer *renderer, void *use
      * current mixer output instead of a burst of stale sound. */
     switch (hint)
     {
-        case AUDIOINTERRUPT_HINT_PAUSE:
-        case AUDIOINTERRUPT_HINT_STOP:
+        /* API 12 NDK names (native_audiostream_base.h); the system-internal
+         * AUDIOINTERRUPT_HINT_* aliases do not exist in the app SDK. */
+        case AUDIOSTREAM_INTERRUPT_HINT_PAUSE:
+        case AUDIOSTREAM_INTERRUPT_HINT_STOP:
             hidden->interrupted = 1;
             /* Idempotent: the service usually already paused the stream;
              * this only matters for implementations that expect the app to
              * do it. Errors are ignored on purpose. */
             OH_AudioRenderer_Pause(hidden->renderer);
             break;
-        case AUDIOINTERRUPT_HINT_RESUME:
-        case AUDIOINTERRUPT_HINT_NONE:
+        case AUDIOSTREAM_INTERRUPT_HINT_RESUME:
+        case AUDIOSTREAM_INTERRUPT_HINT_NONE:
         default:
             if (hidden->interrupted)
             {
