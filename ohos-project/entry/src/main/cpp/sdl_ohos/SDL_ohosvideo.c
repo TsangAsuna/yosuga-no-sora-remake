@@ -551,5 +551,13 @@ static void OHOS_SetWindowFullscreen(_THIS, SDL_Window *window, SDL_VideoDisplay
 	(void)_this;
 	(void)window;
 	(void)display;
-	(void)fullscreen;
+	/* The XComponent surface is managed by the ArkTS shell: forward the
+	 * switch to it (the 100 ms poll applies window.setWindowFullscreen,
+	 * which toggles the OS fullscreen state on HarmonyOS PC / 2-in-1
+	 * tablets). The SDL window keeps its logical size either way - the
+	 * compositor stretches the buffer into the 16:9 surface. */
+	if (SDL_OHOS_SetAppFullscreen)
+	{
+		SDL_OHOS_SetAppFullscreen(fullscreen ? 1 : 0);
+	}
 }

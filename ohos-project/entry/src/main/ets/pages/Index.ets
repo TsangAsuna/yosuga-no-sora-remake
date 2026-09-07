@@ -9,6 +9,7 @@ import { preferences } from '@kit.ArkData';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { promptAction, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import deviceInfo from '@ohos.deviceInfo';
 import { unzipTask, copyFileTask, sha256Task, copyUriTask, moveTreeTask, mergeTreeTask, removeTreeTask } from '../workers/DataWorkers';
 
 
@@ -188,6 +189,37 @@ struct Index {
         this.videoOnTop = entryNapi.isVideoPlaying();
         if (wasVideo !== this.videoOnTop) {
           this.log('videoOnTop -> ' + this.videoOnTop + ' t=' + (Date.now() - this.hbStart));
+        }
+        // Fullscreen/windowed switch requested by the game settings menu
+        // (TJS Window.fullScreen -> native bridge). Only meaningful on
+        // HarmonyOS PC / 2-in-1 / tablet forms with window management: on
+        // phones the window is always fullscreen and the immersive layout
+        // is already applied, so the request is acknowledged without
+        // touching the window (setWindowFullscreen(false) would bring the
+        // status bar back over the game).
+        try {
+          const fsReq: number = entryNapi.pollFullscreen() as number;
+          if (fsReq === 0 || fsReq === 1) {
+            const deviceType: string = deviceInfo.deviceType;
+            if (deviceType === 'phone') {
+              entryNapi.ackFullscreen(fsReq);
+            } else {
+              const ctxFs = getContext(this) as common.UIAbilityContext;
+              window.getLastWindow(ctxFs).then((mainWindow: window.Window) => {
+                return mainWindow.setWindowFullscreen(fsReq === 1);
+              }).then(() => {
+                entryNapi.ackFullscreen(fsReq);
+                this.log('fullscreen request applied: ' + fsReq);
+              }).catch((eFs: Error) => {
+                // Ack anyway so the request is not retried in a hot loop; the
+                // settings checkbox keeps the previous (applied) state.
+                entryNapi.ackFullscreen(fsReq);
+                this.log('fullscreen request failed: ' + JSON.stringify(eFs));
+              });
+            }
+          }
+        } catch (eFs2) {
+          // native not ready yet (engine not started) - retry next tick
         }
         // The in-game exit button finishes the engine thread; the native
         // side reports "running" until the engine has actually started, so

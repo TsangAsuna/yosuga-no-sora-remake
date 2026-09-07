@@ -337,6 +337,35 @@ static napi_value IsEngineRunning(napi_env env, napi_callback_info info)
 	return result;
 }
 
+/* pollFullscreen(): the pending fullscreen/windowed switch requested by the
+ * game settings menu (HarmonyOS PC / 2-in-1 tablets). Returns -1 (none),
+ * 0 (windowed) or 1 (fullscreen); the shell applies window.setWindowFullscreen
+ * and acknowledges with ackFullscreen(state). */
+static napi_value PollFullscreen(napi_env env, napi_callback_info info)
+{
+	(void)info;
+	napi_value result;
+	napi_create_int32(env, OHOS_Entry_PollFullscreenRequest(), &result);
+	return result;
+}
+
+/* ackFullscreen(applied): confirm the shell applied window.setWindowFullscreen
+ * (applied = 0 windowed / 1 fullscreen); clears the pending request and
+ * records the state that backs the engine's GetFullScreenMode. */
+static napi_value AckFullscreen(napi_env env, napi_callback_info info)
+{
+	size_t argc = 1;
+	napi_value args[1] = {nullptr};
+	napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+	int32_t applied = 0;
+	if (argc < 1 || napi_get_value_int32(env, args[0], &applied) != napi_ok)
+	{
+		return nullptr;
+	}
+	OHOS_Entry_AckFullscreen(applied);
+	return nullptr;
+}
+
 /* ---- data.xp3 extraction ------------------------------------------------ */
 
 namespace {
@@ -531,6 +560,8 @@ static napi_value Init(napi_env env, napi_value exports)
 		{"setVideoSurfaceId", nullptr, SetVideoSurfaceId, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"isVideoPlaying", nullptr, IsVideoPlaying, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"isEngineRunning", nullptr, IsEngineRunning, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"pollFullscreen", nullptr, PollFullscreen, nullptr, nullptr, nullptr, napi_default, nullptr},
+		{"ackFullscreen", nullptr, AckFullscreen, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"setSurfaceSize", nullptr, SetSurfaceSize, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"extractXp3Start", nullptr, ExtractXp3Start, nullptr, nullptr, nullptr, napi_default, nullptr},
 		{"uriToPath", nullptr, UriToPath, nullptr, nullptr, nullptr, napi_default, nullptr},

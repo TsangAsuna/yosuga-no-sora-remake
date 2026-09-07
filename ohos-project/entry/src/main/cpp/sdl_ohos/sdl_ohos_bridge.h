@@ -99,6 +99,17 @@ OHOS_EXPORT void SDL_OHOS_OnMouseEvent(int action, int button, int x, int y) __a
  * a scancode for the keys the game uses. */
 OHOS_EXPORT void SDL_OHOS_OnKeyEvent(int down, int keycode) __attribute__((weak));
 
+/* Request the ArkTS shell to switch the OS window between fullscreen and
+ * windowed mode (HarmonyOS PC / 2-in-1 tablets - the game settings menu
+ * maps its fullscreen/windowed buttons onto this). The request is stored
+ * here and picked up by the shell's 100 ms poll (pollFullscreen /
+ * ackFullscreen NAPI functions); fullscreen ? 1 : 0. */
+OHOS_EXPORT void SDL_OHOS_SetAppFullscreen(int fullscreen) __attribute__((weak));
+
+/* Current applied fullscreen state: -1 = unknown (never switched yet),
+ * 0 = windowed, 1 = fullscreen. Backs the engine's GetFullScreenMode. */
+OHOS_EXPORT int SDL_OHOS_GetAppFullscreenState(void) __attribute__((weak));
+
 #ifdef __cplusplus
 }
 #endif
