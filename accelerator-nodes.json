@@ -4,8 +4,9 @@
   "nodes": [
     { "name": "GitHub 直链", "prefix": "" },
     { "name": "GH-PROXY.CN", "prefix": "https://gh-proxy.cn/" },
-    { "name": "GH-PROXY.COM", "prefix": "https://gh-proxy.com/" },
-    { "name": "GHPROXY.NET", "prefix": "https://ghproxy.net/" },
-    { "name": "CRAFT-HELLO", "prefix": "https://proxy.craft-hello.top/proxy/" }
+    { "name": "GH-PROXY.ORG", "prefix": "https://gh-proxy.org/" },
+    { "name": "CDN.GH-PROXY.ORG", "prefix": "https://cdn.gh-proxy.org/" },
+    { "name": "AXISNOW.GH-PROXY.ORG", "prefix": "https://axisnow.gh-proxy.org/" },
+    { "name": "V6.GH-PROXY.ORG", "prefix": "https://v6.gh-proxy.org/" }
   ]
 }

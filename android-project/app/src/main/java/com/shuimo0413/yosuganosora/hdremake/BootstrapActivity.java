@@ -77,7 +77,7 @@ public class BootstrapActivity extends Activity {
     private static final int DESIGN_HEIGHT = 1080;
     private static final int PROXY_DIRECT = 1;
     private static final int PROXY_GH = 2;
-    private static final int PROXY_CRAFT = 3;
+    private static final int PROXY_GH_ORG = 3;
     // Download accelerator nodes: (display name, proxy prefix). The
     // prefix is prepended to the full GitHub URL. Empty prefix = direct.
     // This is the BUILT-IN FALLBACK list: the app refreshes the live list
@@ -89,8 +89,7 @@ public class BootstrapActivity extends Activity {
         {"GH-PROXY.ORG", "https://gh-proxy.org/"},
         {"CDN.GH-PROXY.ORG", "https://cdn.gh-proxy.org/"},
         {"AXISNOW.GH-PROXY.ORG", "https://axisnow.gh-proxy.org/"},
-        {"V6.GH-PROXY.ORG", "https://v6.gh-proxy.org/"},
-        {"CRAFT-HELLO", "https://proxy.craft-hello.top/proxy/"}
+        {"V6.GH-PROXY.ORG", "https://v6.gh-proxy.org/"}
     };
     // Live node list; starts as the built-in fallback and is replaced by the
     // fetched accelerator-nodes.json when available.
@@ -164,14 +163,14 @@ public class BootstrapActivity extends Activity {
     private ImageView extractTrackView;
     private ImageView directLabelView;
     private ImageView ghProxyLabelView;
-    private ImageView craftProxyLabelView;
+    private ImageView ghOrgProxyLabelView;
     private ImageView downloadLabelView;
     private ImageView importLabelView;
     private EditText baseUrlInput;
     private EditText proxyInput;
     private Button directButton;
     private Button ghProxyButton;
-    private Button craftProxyButton;
+    private Button ghOrgProxyButton;
     private Button downloadButton;
     private Button importButton;
     // Static + volatile on purpose: the transfer threads outlive an Activity
@@ -328,14 +327,14 @@ public class BootstrapActivity extends Activity {
         // widget theme.
         directLabelView = makeAssetImage(R.drawable.github_direct);
         ghProxyLabelView = makeAssetImage(R.drawable.gh_proxy_label);
-        craftProxyLabelView = makeAssetImage(R.drawable.craft_hello_label);
+        ghOrgProxyLabelView = makeAssetImage(R.drawable.gh_proxy_label);
         downloadLabelView = makeAssetImage(R.drawable.download_label);
         importLabelView = makeAssetImage(R.drawable.import_label);
         progressTrackView = makeAssetImage(R.drawable.progress_track);
         progressTrackView.setVisibility(View.GONE);
         canvas.addView(directLabelView, frame(356, 123, 200, 430));
         canvas.addView(ghProxyLabelView, frame(338, 105, 600, 440));
-        canvas.addView(craftProxyLabelView, frame(673, 105, 1000, 440));
+        canvas.addView(ghOrgProxyLabelView, frame(673, 105, 1000, 440));
         canvas.addView(progressTrackView, frame(1215, 26, 210, 690));
         canvas.addView(downloadLabelView, frame(136, 57, 1270, 800));
         canvas.addView(importLabelView, frame(201, 57, 1470, 800));
@@ -432,13 +431,13 @@ public class BootstrapActivity extends Activity {
 
         directButton = makeOverlayButton("GitHub直链");
         ghProxyButton = makeOverlayButton("GH-PROXY");
-        craftProxyButton = makeOverlayButton("CRAFT-HELLO PROXY");
+        ghOrgProxyButton = makeOverlayButton("GH-PROXY.ORG");
         attachProxyFeedback(directButton, PROXY_DIRECT);
         attachProxyFeedback(ghProxyButton, PROXY_GH);
-        attachProxyFeedback(craftProxyButton, PROXY_CRAFT);
+        attachProxyFeedback(ghOrgProxyButton, PROXY_GH_ORG);
         canvas.addView(directButton, frame(550, 145, 20, 425));
         canvas.addView(ghProxyButton, frame(420, 145, 570, 425));
-        canvas.addView(craftProxyButton, frame(740, 145, 980, 425));
+        canvas.addView(ghOrgProxyButton, frame(740, 145, 980, 425));
 
         updateProxyArtwork();
 
@@ -496,8 +495,8 @@ public class BootstrapActivity extends Activity {
         selectedProxy = proxy;
         if (selectedProxy == PROXY_GH) {
             proxyInput.setText("https://gh-proxy.cn/");
-        } else if (selectedProxy == PROXY_CRAFT) {
-            proxyInput.setText("https://proxy.craft-hello.top/proxy/");
+        } else if (selectedProxy == PROXY_GH_ORG) {
+            proxyInput.setText("https://gh-proxy.org/");
         } else {
             proxyInput.setText("");
         }
@@ -511,12 +510,12 @@ public class BootstrapActivity extends Activity {
         ghProxyLabelView.setImageResource(
                 selectedProxy == PROXY_GH || hoverProxy == PROXY_GH
                 ? R.drawable.gh_proxy_label_selected : R.drawable.gh_proxy_label);
-        craftProxyLabelView.setImageResource(
-                selectedProxy == PROXY_CRAFT || hoverProxy == PROXY_CRAFT
-                ? R.drawable.craft_hello_label_selected : R.drawable.craft_hello_label);
+        ghOrgProxyLabelView.setImageResource(
+                selectedProxy == PROXY_GH_ORG || hoverProxy == PROXY_GH_ORG
+                ? R.drawable.gh_proxy_label_selected : R.drawable.gh_proxy_label);
         directButton.setSelected(selectedProxy == PROXY_DIRECT);
         ghProxyButton.setSelected(selectedProxy == PROXY_GH);
-        craftProxyButton.setSelected(selectedProxy == PROXY_CRAFT);
+        ghOrgProxyButton.setSelected(selectedProxy == PROXY_GH_ORG);
     }
 
     private void attachActionFeedback(Button button, ImageView artwork,
@@ -734,7 +733,7 @@ public class BootstrapActivity extends Activity {
             importButton.setEnabled(!value);
             directButton.setEnabled(!value);
             ghProxyButton.setEnabled(!value);
-            craftProxyButton.setEnabled(!value);
+            ghOrgProxyButton.setEnabled(!value);
             updateProxyArtwork();
             updateActionArtwork();
             progressView.setVisibility(value ? View.VISIBLE : View.GONE);
@@ -1026,7 +1025,8 @@ public class BootstrapActivity extends Activity {
         String manifestUrl = (customBase || proxy.isEmpty())
                 ? (base + "data-assets.json")
                 : (proxy + base + "data-assets.json");
-        HttpURLConnection conn = (HttpURLConnection) new URL(manifestUrl).openConnection();
+        HttpURLConnection conn = (HttpURLConnection) new URL(manifestUrl)
+                .openConnection(systemProxy());
         conn.setConnectTimeout(20000);
         conn.setReadTimeout(30000);
         conn.setRequestProperty("User-Agent", "YosugaSoraHD/1.0");
@@ -1120,7 +1120,8 @@ public class BootstrapActivity extends Activity {
                             }
                             HttpURLConnection conn = null;
                             try {
-                                conn = (HttpURLConnection) new URL(urlStr).openConnection();
+                                conn = (HttpURLConnection) new URL(urlStr)
+                                        .openConnection(systemProxy());
                                 conn.setConnectTimeout(20000);
                                 conn.setReadTimeout(60000);
                                 conn.setRequestProperty("User-Agent", "YosugaSoraHD/1.0");
@@ -1296,8 +1297,8 @@ public class BootstrapActivity extends Activity {
             NODE_LATENCY = new long[loaded.length];
             java.util.Arrays.fill(NODE_LATENCY, -1);
             // Probe every node so the settings dialog can show live latency.
-            // Deliberately NO auto-selection: the GitHub direct / GH-PROXY /
-            // CRAFT-HELLO buttons keep their manual semantics (only the
+            // Deliberately NO auto-selection: the GitHub direct / GH-PROXY.CN /
+            // GH-PROXY.ORG buttons keep their manual semantics (only the
             // selected one prefixes the upstream data URLs).
             if (sCurrent != null && sCurrent.proxyInput != null) {
                 for (int i = 0; i < loaded.length; i++) {
@@ -1308,6 +1309,25 @@ public class BootstrapActivity extends Activity {
                     }
                 }
             }
+    }
+
+    /** Returns the system HTTP proxy (VPN/Clash etc.) or NO_PROXY when none
+     *  is configured. Android's HttpURLConnection ignores the system proxy
+     *  for non-privileged apps, so probes and downloads must apply it
+     *  explicitly to honor a running proxy. */
+    private static java.net.Proxy systemProxy() {
+        try {
+            if (sCurrent != null) {
+                android.net.ConnectivityManager cm = (android.net.ConnectivityManager)
+                        sCurrent.getSystemService(Context.CONNECTIVITY_SERVICE);
+                if (cm != null) {
+                    java.net.Proxy p = cm.getDefaultProxy();
+                    if (p != null) return p;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return java.net.Proxy.NO_PROXY;
     }
 
     /** Returns RTT in ms for a proxy prefix (small Range GET), or -1. */
@@ -1321,11 +1341,23 @@ public class BootstrapActivity extends Activity {
         // count as unreachable.
         final String probeUrl = proxyPrefix
                 + "https://github.com/";
+        // 1) Try through the system proxy (Clash/VPN) with a short budget:
+        //    if the proxy died mid-session we must not block on its timeout.
+        java.net.Proxy sys = systemProxy();
+        long via = probeOnce(probeUrl, sys, 2500);
+        if (via >= 0) return via;
+        // 2) Proxy absent/failed: fall back to direct quickly.
+        return probeOnce(probeUrl, java.net.Proxy.NO_PROXY, 6000);
+    }
+
+    /** One Range-GET probe through the given proxy; -1 on failure. */
+    private static long probeOnce(String probeUrl, java.net.Proxy proxy, int timeoutMs) {
         long t0 = System.currentTimeMillis();
         try {
-            HttpURLConnection conn = (HttpURLConnection) new java.net.URL(probeUrl).openConnection();
-            conn.setConnectTimeout(6000);
-            conn.setReadTimeout(6000);
+            HttpURLConnection conn = (HttpURLConnection)
+                    new java.net.URL(probeUrl).openConnection(proxy);
+            conn.setConnectTimeout(timeoutMs);
+            conn.setReadTimeout(timeoutMs);
             conn.setRequestMethod("GET");
             conn.setRequestProperty("User-Agent", "YosugaSoraHD/1.0");
             conn.setRequestProperty("Range", "bytes=0-0");
@@ -1335,8 +1367,6 @@ public class BootstrapActivity extends Activity {
                 while (in.read(tmp) >= 0) { /* drain */ }
             }
             conn.disconnect();
-            // Any HTTP status counts as "reaches github.com"; only connection
-            // failures (exceptions above) mean the prefix is unreachable.
             if (code <= 0) return -1;
             return System.currentTimeMillis() - t0;
         } catch (Exception e) {
@@ -1660,7 +1690,8 @@ public class BootstrapActivity extends Activity {
         String manifestUrl = (customBase || proxy.isEmpty())
                 ? (base + "data-assets.json")
                 : (proxy + base + "data-assets.json");
-        HttpURLConnection conn = (HttpURLConnection) new URL(manifestUrl).openConnection();
+        HttpURLConnection conn = (HttpURLConnection) new URL(manifestUrl)
+                .openConnection(systemProxy());
         conn.setConnectTimeout(20000);
         conn.setReadTimeout(30000);
         conn.setRequestProperty("User-Agent", "YosugaSoraHD/1.0");
