@@ -1039,7 +1039,6 @@ public class BootstrapActivity extends Activity {
         if (assets == null) return out;
         for (int i = 0; i < assets.length(); i++) {
             JSONObject a = assets.getJSONObject(i);
-            boolean customBase = !baseUrlInput.getText().toString().trim().isEmpty();
             String assetUrl = (customBase || proxy.isEmpty())
                     ? (base + a.getString("name"))
                     : (proxy + base + a.getString("name"));
