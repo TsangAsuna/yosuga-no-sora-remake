@@ -35,6 +35,10 @@
 	<!-- Modified from default CMake template -->
 	<key>UIRequiresFullScreen</key>
 	<true/>
+	<!-- iOS 13 introduced Dark Mode: keep the shell (bootstrap page and
+	     system dialogs) on deterministic light styling. -->
+	<key>UIUserInterfaceStyle</key>
+	<string>Light</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIStatusBarHidden</key>

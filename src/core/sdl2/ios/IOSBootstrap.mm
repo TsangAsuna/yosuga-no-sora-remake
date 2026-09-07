@@ -11,7 +11,6 @@
 
 #import <UIKit/UIKit.h>
 #import <CommonCrypto/CommonDigest.h>
-#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include <string>
 #include <cstring>
@@ -1612,10 +1611,15 @@ static int ExtractProgressCb(void *ctx, int done, int total, const char *nameUtf
     _importPickerOpen = YES;
     [self updateActionArtwork];
     [self setMessage:@""];
-    NSArray *types = @[UTTypeZIP, UTTypeData];
+    /* The UniformTypeIdentifiers framework (UTTypeZIP / UTTypeData /
+     * initForOpeningContentTypes:) is iOS 14+; the deployment target is
+     * iOS 13, so use the classic UTI-string document picker, which works
+     * from iOS 8 through current releases. */
+    NSArray *types = @[@"public.zip-archive", @"public.data"];
     UIDocumentPickerViewController *picker =
         [[UIDocumentPickerViewController alloc]
-            initForOpeningContentTypes:types asCopy:YES];
+            initWithDocumentTypes:types
+                           inMode:UIDocumentPickerModeImport];
     picker.delegate = self;
     picker.allowsMultipleSelection = YES;
     [self presentViewController:picker animated:YES completion:nil];

@@ -244,6 +244,8 @@ jobs:
           IOS_BUILD_NUMBER: ${{ steps.release.outputs.version-code }}
           IOS_BUNDLE_IDENTIFIER: ${{ steps.release.outputs.bundle-identifier }}
           IOS_EMBED_DATA: 'OFF'
+          # Minimum supported release: iOS 13 (the UIScene lifecycle floor).
+          IOS_DEPLOYMENT_TARGET: '13.0'
         run: |
           set -euo pipefail
           # Write the current repository's Release download root into the
@@ -329,6 +331,10 @@ jobs:
             "$VERSION_NAME" ]]
           [[ "$(plutil -extract CFBundleVersion raw "$app/Info.plist")" == \
             "$VERSION_CODE" ]]
+          # Deployment-target floor: the IPA must keep its iOS 13 minimum
+          # (Xcode derives MinimumOSVersion from IPHONEOS_DEPLOYMENT_TARGET).
+          [[ "$(plutil -extract MinimumOSVersion raw "$app/Info.plist")" == \
+            '13.0' ]]
           if [[ "$SIGNED" == 'true' ]]; then
             [[ -f "$app/embedded.mobileprovision" ]]
             codesign --verify --deep --strict --verbose=2 "$app"
