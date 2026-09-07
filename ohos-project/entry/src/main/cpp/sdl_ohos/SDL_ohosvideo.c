@@ -142,9 +142,28 @@ static int OHOS_UpdateWindowFramebuffer(_THIS, SDL_Window *window,
 	{
 		return SDL_SetError("OHOS: invalid buffer size");
 	}
-	if (OH_NativeWindow_NativeWindowHandleOpt(native_window, SET_BUFFER_GEOMETRY, bw, bh) != 0)
+	/* Window resize race mitigation: during maximize/restore transitions the
+	 * consumer can hand out buffers smaller than the geometry we set a moment
+	 * ago. Re-asserting SET_BUFFER_GEOMETRY EVERY frame widens that race
+	 * window (each call re-negotiates with the compositor mid-transition);
+	 * set it only when the requested size actually changes. */
 	{
-		return SDL_SetError("OHOS: SET_BUFFER_GEOMETRY failed");
+		static int32_t last_bw = -1, last_bh = -1;
+		if (bw != last_bw || bh != last_bh)
+		{
+			if (OH_NativeWindow_NativeWindowHandleOpt(native_window, SET_BUFFER_GEOMETRY, bw, bh) != 0)
+			{
+				return SDL_SetError("OHOS: SET_BUFFER_GEOMETRY failed");
+			}
+			last_bw = bw;
+			last_bh = bh;
+			if (SDL_OHOS_DiagLog)
+			{
+				char diag[96];
+				snprintf(diag, sizeof(diag), "upd: geometry set %dx%d", bw, bh);
+				SDL_OHOS_DiagLog(diag);
+			}
+		}
 	}
 
 	/* LockBuffer is the only path whose buffers actually present on this
@@ -191,6 +210,33 @@ static int OHOS_UpdateWindowFramebuffer(_THIS, SDL_Window *window,
 		else
 			OH_NativeWindow_NativeWindowAbortBuffer(native_window, buffer);
 		return SDL_SetError("OHOS: buffer has no writable address");
+	}
+
+	/* Window resize race: the consumer may hand us a buffer SMALLER than the
+	 * geometry we just requested (the ArkTS side updates the physical size
+	 * one frame later, and the compositor switches the window size
+	 * asynchronously on maximize/restore). Writing the requested (stale,
+	 * larger) geometry into the actual (smaller) buffer overflows it and
+	 * segfaults - the "press the system restore button and the game dies"
+	 * crash. Always trust the buffer's own geometry for the write loop.
+	 * NOTE: GET_BUFFER_GEOMETRY takes height FIRST, then width. */
+	{
+		static int32_t last_w = -1, last_h = -1;
+		int32_t gw = 0, gh = 0;
+		if (OH_NativeWindow_NativeWindowHandleOpt(native_window, GET_BUFFER_GEOMETRY, &gh, &gw) == 0 &&
+			gw > 0 && gh > 0 && (gw < bw || gh < bh))
+		{
+			bw = (gw < bw) ? gw : bw;
+			bh = (gh < bh) ? gh : bh;
+			if (SDL_OHOS_DiagLog && (bw != last_w || bh != last_h))
+			{
+				char diag[96];
+				snprintf(diag, sizeof(diag), "upd: clamped write to %dx%d", bw, bh);
+				SDL_OHOS_DiagLog(diag);
+			}
+		}
+		last_w = bw;
+		last_h = bh;
 	}
 
 	/* Copy the SDL surface (ARGB8888) into the native buffer, scaling from

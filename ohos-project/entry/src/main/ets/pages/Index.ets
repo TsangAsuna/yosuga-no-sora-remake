@@ -157,6 +157,9 @@ struct Index {
   private assets: DataAsset[] = [];
   private manifest: DataManifest | null = null;
   private xcController: XComponentController = new XComponentController();
+  // Surface id currently attached to the engine (re-attached by onAreaChange
+  // whenever a window-mode change rebuilds the surface behind our back).
+  private xcSurfaceId: string = '';
   private xcVideoController: XComponentController = new XComponentController();
   // True while the AVPlayer renders video: the video XComponent is raised
   // above the game XComponent (polled from native, no NAPI callback needed).
@@ -2682,6 +2685,7 @@ struct Index {
                   this.log('getXComponentSurfaceId failed: ' + JSON.stringify(e3));
                 }
                 this.log('onLoad surfaceId=' + sid);
+                this.xcSurfaceId = sid;
                 entryNapi.setSurfaceId(sid);
                 this.log('XComponent onLoad native-attach done');
                 const ok: boolean = entryNapi.onLoad(context) as boolean;
@@ -2736,6 +2740,14 @@ struct Index {
                   // resizing it to the physical size made the game crash
                   // ("Scan line 0 is range over (0 to -1)") because layers are
                   // laid out in the 1920x1080 coordinate system.
+                  //
+                  // NOTE: do NOT call xcController.getXComponentSurfaceId()
+                  // here. Probing the surface id on every layout change
+                  // crashes ArkUI (libace_compatible SIGSEGV, fault addr=0)
+                  // while the window is mid-transition - the crash handler
+                  // caught exactly that stack on 37103/37105. The surface id
+                  // is delivered once via onLoad; the SDL driver handles
+                  // buffer resizes by reading the live buffer geometry.
                   entryNapi.setSurfaceSize(vp2px(w), vp2px(h));
                   this.log('XComponent size: ' + vp2px(w).toFixed(0) + 'x' + vp2px(h).toFixed(0) + ' px');
                   try {
