@@ -141,6 +141,8 @@ public class BootstrapActivity extends Activity {
 
     private static final String TAG = "YosugaBootstrap";
     private static final String PREFS = "data_setup";
+    private static final String KEY_BASE_URL = "custom_base_url";
+    private static final String KEY_PROXY_PREFIX = "custom_proxy_prefix";
     private static final String KEY_CONFIRMED_VERSION = "confirmed_version";
     /** Poison pill telling the extraction thread the download loop is done. */
     private static final Object EXTRACT_DONE = new Object();
@@ -372,15 +374,17 @@ public class BootstrapActivity extends Activity {
         // local-download entry; the normal screen stays identical to the
         // supplied 1920x1080 artwork.
         baseUrlInput = new EditText(this);
-        baseUrlInput.setText("");
+        baseUrlInput.setText(getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getString(KEY_BASE_URL, ""));
         baseUrlInput.setTextSize(12f);
         baseUrlInput.setSingleLine(true);
-        baseUrlInput.setHint("下载地址（留空使用构建内置的发布仓库）");
+        baseUrlInput.setHint("下载地址（留空使用构建内置的发布仓库；填直链或镜像地址则直接使用，不再套加速前缀）");
         proxyInput = new EditText(this);
-        proxyInput.setText("");
+        proxyInput.setText(getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getString(KEY_PROXY_PREFIX, ""));
         proxyInput.setTextSize(12f);
         proxyInput.setSingleLine(true);
-        proxyInput.setHint("加速代理前缀（留空=直连）");
+        proxyInput.setHint("加速代理前缀（用于给上游下载地址自动生成加速链接；留空=直连）");
 
         messageView = new TextView(this);
         messageView.setText(" ");
@@ -578,6 +582,9 @@ public class BootstrapActivity extends Activity {
             row.setOnClickListener(v -> {
                 proxy.setText(ACCEL_NODES[nodeIndex][1]);
                 proxyInput.setText(ACCEL_NODES[nodeIndex][1]);
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                        .putString(KEY_PROXY_PREFIX, ACCEL_NODES[nodeIndex][1])
+                        .apply();
                 dialog.dismiss();
                 startDownload();
             });
@@ -593,7 +600,7 @@ public class BootstrapActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("下载设置")
-                .setMessage("长按本地文件下载可再次打开此设置")
+                .setMessage("节点=加速前缀，用于给默认上游地址生成加速链接；自定义下载地址请填直链或镜像地址（填了则直接使用，不再套前缀）")
                 .setView(fields)
                 .setPositiveButton("确定", null)
                 .create();
@@ -623,6 +630,10 @@ public class BootstrapActivity extends Activity {
                     .setOnClickListener(v -> {
                         baseUrlInput.setText(url.getText());
                         proxyInput.setText(proxy.getText());
+                        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                                .putString(KEY_BASE_URL, url.getText().toString())
+                                .putString(KEY_PROXY_PREFIX, proxy.getText().toString())
+                                .apply();
                         nodePinger.removeCallbacksAndMessages(null);
                         dialog.dismiss();
                     });
@@ -969,7 +980,11 @@ public class BootstrapActivity extends Activity {
         List<String[]> out = new ArrayList<>();
         String base = resolveBaseUrl();
         final String proxy = proxyInput.getText().toString().trim();
-        String manifestUrl = proxy.isEmpty() ? (base + "data-assets.json")
+        // A custom base URL is the final source (direct or mirror): never
+        // stack the accelerator prefix on top of it.
+        boolean customBase = !baseUrlInput.getText().toString().trim().isEmpty();
+        String manifestUrl = (customBase || proxy.isEmpty())
+                ? (base + "data-assets.json")
                 : (proxy + base + "data-assets.json");
         HttpURLConnection conn = (HttpURLConnection) new URL(manifestUrl).openConnection();
         conn.setConnectTimeout(20000);
@@ -988,7 +1003,9 @@ public class BootstrapActivity extends Activity {
         if (assets == null) return out;
         for (int i = 0; i < assets.length(); i++) {
             JSONObject a = assets.getJSONObject(i);
-            String assetUrl = proxy.isEmpty() ? (base + a.getString("name"))
+            boolean customBase = !baseUrlInput.getText().toString().trim().isEmpty();
+            String assetUrl = (customBase || proxy.isEmpty())
+                    ? (base + a.getString("name"))
                     : (proxy + base + a.getString("name"));
             out.add(new String[]{
                 a.getString("name"),
@@ -1587,7 +1604,11 @@ public class BootstrapActivity extends Activity {
     private long fetchFileTotal() throws Exception {
         String base = resolveBaseUrl();
         final String proxy = proxyInput.getText().toString().trim();
-        String manifestUrl = proxy.isEmpty() ? (base + "data-assets.json")
+        // A custom base URL is the final source (direct or mirror): never
+        // stack the accelerator prefix on top of it.
+        boolean customBase = !baseUrlInput.getText().toString().trim().isEmpty();
+        String manifestUrl = (customBase || proxy.isEmpty())
+                ? (base + "data-assets.json")
                 : (proxy + base + "data-assets.json");
         HttpURLConnection conn = (HttpURLConnection) new URL(manifestUrl).openConnection();
         conn.setConnectTimeout(20000);
