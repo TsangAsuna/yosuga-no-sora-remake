@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "description": "GitHub download accelerator nodes for the launcher. Add or remove entries without shipping a new APK; the launcher refreshes this file at startup and falls back to its built-in list when unreachable.",
+  "nodes": [
+    { "name": "GitHub 直链", "prefix": "" },
+    { "name": "GH-PROXY.CN", "prefix": "https://gh-proxy.cn/" },
+    { "name": "GH-PROXY.COM", "prefix": "https://gh-proxy.com/" },
+    { "name": "GHPROXY.NET", "prefix": "https://ghproxy.net/" },
+    { "name": "CRAFT-HELLO", "prefix": "https://proxy.craft-hello.top/proxy/" }
+  ]
+}

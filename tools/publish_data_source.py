@@ -141,12 +141,21 @@ def main() -> int:
     with open(os.path.join(out_dir, "BUILD-INFO.txt"), "w",
               encoding="utf-8", newline="\n") as handle:
         handle.write("\n".join(info_lines) + "\n")
+    # The accelerator-node list ships WITH the data release so the launcher
+    # fetches nodes from the SAME source that serves the data (no fork of
+    # this repo required): resolveBaseUrl() + "accelerator-nodes.json".
+    src_nodes = os.path.join(REPO, "accelerator-nodes.json")
+    if os.path.isfile(src_nodes):
+        shutil.copy2(src_nodes, os.path.join(out_dir, "accelerator-nodes.json"))
     print("packaged into %s (%d parts)" % (out_dir, len(assets)))
 
     # 4. Upload (gh when available).
     upload_paths = [os.path.join(out_dir, a["name"]) for a in assets]
     upload_paths += [os.path.join(out_dir, "data-assets.json"),
                      os.path.join(out_dir, "BUILD-INFO.txt")]
+    nodes_out = os.path.join(out_dir, "accelerator-nodes.json")
+    if os.path.isfile(nodes_out):
+        upload_paths += [nodes_out]
     uploaded = False
     if args.skip_upload:
         print("--skip-upload given; skipping the gh step")

@@ -79,16 +79,21 @@ public class BootstrapActivity extends Activity {
     private static final int PROXY_CRAFT = 3;
     // Download accelerator nodes: (display name, proxy prefix). The
     // prefix is prepended to the full GitHub URL. Empty prefix = direct.
-    // axisnow/others go here once a verified prefix is provided.
-    private static final String[][] ACCEL_NODES = {
+    // This is the BUILT-IN FALLBACK list: the app refreshes the live list
+    // from accelerator-nodes.json in the repo root when it can reach GitHub
+    // raw, so nodes can be added/removed without shipping a new APK.
+    private static final String[][] DEFAULT_NODES = {
         {"GitHub 直链", ""},
         {"GH-PROXY.CN", "https://gh-proxy.cn/"},
         {"GH-PROXY.COM", "https://gh-proxy.com/"},
         {"GHPROXY.NET", "https://ghproxy.net/"},
         {"CRAFT-HELLO", "https://proxy.craft-hello.top/proxy/"}
     };
+    // Live node list; starts as the built-in fallback and is replaced by the
+    // fetched accelerator-nodes.json when available.
+    private static volatile String[][] ACCEL_NODES = DEFAULT_NODES;
     // Node latency cache (ms); -1 = unknown/failed. Index matches ACCEL_NODES.
-    private static final long[] NODE_LATENCY = new long[ACCEL_NODES.length];
+    private static volatile long[] NODE_LATENCY = new long[DEFAULT_NODES.length];
     private static final int ACTION_NONE = 0;
     private static final int ACTION_DOWNLOAD = 1;
     private static final int ACTION_IMPORT = 2;
@@ -431,6 +436,7 @@ public class BootstrapActivity extends Activity {
         updateProxyArtwork();
 
         setContentView(root);
+        refreshAcceleratorNodes();
     }
 
     private FrameLayout.LayoutParams frame(int width, int height, int left, int top) {
@@ -1147,6 +1153,88 @@ public class BootstrapActivity extends Activity {
         if (err != null) {
             throw err;
         }
+    }
+
+    /** Fetches the live accelerator-node list from multiple sources so a
+     *  blocked mirror (e.g. GFW/ISP) never starves the launcher:
+     *  1. jsDelivr CDN (usually reachable in CN when raw is not)
+     *  2. GitHub raw (second choice)
+     *  Falls back to the built-in list when both fail. After a successful
+     *  refresh every node is latency-probed and the fastest reachable node
+     *  is auto-selected into the proxy field (only when the user has not
+     *  typed a custom prefix). */
+    private static void refreshAcceleratorNodes() {
+        new Thread(() -> {
+            final String repo = "TsangAsuna/yosuga-no-sora-remake";
+            final String[] sources = {
+                "https://cdn.jsdelivr.net/gh/" + repo + "@main/accelerator-nodes.json",
+                "https://raw.githubusercontent.com/" + repo + "/main/accelerator-nodes.json"
+            };
+            String[][] loaded = null;
+            for (String urlStr : sources) {
+                try {
+                    HttpURLConnection conn = (HttpURLConnection) new java.net.URL(urlStr).openConnection();
+                    conn.setConnectTimeout(8000);
+                    conn.setReadTimeout(8000);
+                    conn.setRequestProperty("User-Agent", "YosugaSoraHD/1.0");
+                    StringBuilder sb = new StringBuilder();
+                    try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                            conn.getInputStream(), StandardCharsets.UTF_8))) {
+                        String line;
+                        while ((line = r.readLine()) != null) sb.append(line).append('\n');
+                    } finally {
+                        conn.disconnect();
+                    }
+                    JSONArray arr = new JSONObject(sb.toString()).optJSONArray("nodes");
+                    if (arr == null || arr.length() == 0) continue;
+                    java.util.List<String[]> list = new java.util.ArrayList<>();
+                    for (int i = 0; i < arr.length(); i++) {
+                        JSONObject o = arr.optJSONObject(i);
+                        if (o == null) continue;
+                        String name = o.optString("name", "").trim();
+                        String prefix = o.optString("prefix", "").trim();
+                        if (name.isEmpty()) continue;
+                        if (!prefix.isEmpty() && !prefix.startsWith("https://")
+                                && !prefix.startsWith("http://")) continue;
+                        list.add(new String[]{name, prefix});
+                    }
+                    if (!list.isEmpty()) {
+                        loaded = list.toArray(new String[0][]);
+                        break;
+                    }
+                } catch (Exception e) {
+                    // try next source
+                }
+            }
+            if (loaded == null) return; // keep built-in fallback
+            ACCEL_NODES = loaded;
+            NODE_LATENCY = new long[loaded.length];
+            java.util.Arrays.fill(NODE_LATENCY, -1);
+            // Probe every node and auto-pick the fastest reachable one into
+            // the proxy field unless the user already typed a custom prefix.
+            if (sCurrent != null && sCurrent.proxyInput != null
+                    && sCurrent.proxyInput.getText().toString().trim().isEmpty()) {
+                long bestLat = Long.MAX_VALUE;
+                int bestIndex = -1;
+                for (int i = 0; i < loaded.length; i++) {
+                    final int nodeIndex = i;
+                    try {
+                        long ms = pingNodeLatency(loaded[nodeIndex][1]);
+                        NODE_LATENCY[nodeIndex] = ms;
+                        if (ms >= 0 && ms < bestLat) {
+                            bestLat = ms;
+                            bestIndex = nodeIndex;
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+                if (bestIndex >= 0) {
+                    final int sel = bestIndex;
+                    sCurrent.runOnUiThread(() ->
+                            sCurrent.proxyInput.setText(loaded[sel][1]));
+                }
+            }
+        }).start();
     }
 
     /** Returns RTT in ms for a proxy prefix (small Range GET), or -1. */
