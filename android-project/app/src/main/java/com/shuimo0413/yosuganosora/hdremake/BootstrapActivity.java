@@ -1230,8 +1230,9 @@ public class BootstrapActivity extends Activity {
                 }
                 if (bestIndex >= 0) {
                     final int sel = bestIndex;
+                    final String[][] nodes = loaded;
                     sCurrent.runOnUiThread(() ->
-                            sCurrent.proxyInput.setText(loaded[sel][1]));
+                            sCurrent.proxyInput.setText(nodes[sel][1]));
                 }
             }
         }).start();
