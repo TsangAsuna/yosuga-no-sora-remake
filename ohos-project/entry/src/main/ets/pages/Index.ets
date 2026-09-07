@@ -195,7 +195,7 @@ struct Index {
         // HarmonyOS PC / 2-in-1 / tablet forms with window management: on
         // phones the window is always fullscreen and the immersive layout
         // is already applied, so the request is acknowledged without
-        // touching the window (setWindowFullscreen(false) would bring the
+        // touching the window (setFullScreen(false) would bring the
         // status bar back over the game).
         try {
           const fsReq: number = entryNapi.pollFullscreen() as number;
@@ -205,12 +205,12 @@ struct Index {
               entryNapi.ackFullscreen(fsReq);
             } else {
               const ctxFs = getContext(this) as common.UIAbilityContext;
-              window.getLastWindow(ctxFs).then((mainWindow: window.Window) => {
-                return mainWindow.setWindowFullscreen(fsReq === 1);
-              }).then(() => {
+              window.getLastWindow(ctxFs).then((mainWindow: window.Window): Promise<void> => {
+                return mainWindow.setFullScreen(fsReq === 1);
+              }).then((): void => {
                 entryNapi.ackFullscreen(fsReq);
                 this.log('fullscreen request applied: ' + fsReq);
-              }).catch((eFs: Error) => {
+              }).catch((eFs: Error): void => {
                 // Ack anyway so the request is not retried in a hot loop; the
                 // settings checkbox keeps the previous (applied) state.
                 entryNapi.ackFullscreen(fsReq);
