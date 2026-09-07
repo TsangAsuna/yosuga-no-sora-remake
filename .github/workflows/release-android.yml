@@ -35,7 +35,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.workflow }}-${{ github.ref }}
+  group: release-${{ github.workflow }}-${{ github.ref }}-${{ inputs.abi }}
   cancel-in-progress: false
 
 jobs:
