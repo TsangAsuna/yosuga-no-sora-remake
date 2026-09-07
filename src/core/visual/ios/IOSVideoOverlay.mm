@@ -80,7 +80,7 @@ static void TVPIOSScheduleSDLWindowRelayout(UIWindowScene *scene)
        passes, leaving a sub-pixel gap at the bottom edge until the first
        interaction triggers another layout.  A final pass covers it. */
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-        (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         TVPIOSRelayoutSDLWindow(weakScene);
     });
 }

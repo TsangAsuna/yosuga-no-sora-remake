@@ -15,6 +15,16 @@ name: Release Android SDL2
         required: true
         default: true
         type: boolean
+      abi:
+        description: 'Android ABI to build (arm64-v8a, armeabi-v7a, x86, x86_64)'
+        required: false
+        default: 'arm64-v8a'
+        type: choice
+        options:
+          - arm64-v8a
+          - armeabi-v7a
+          - x86
+          - x86_64
 
 permissions:
   contents: write
@@ -246,10 +256,11 @@ jobs:
           # workflow; the APK ships only the engine and the bootstrap UI.
           rm -rf android-project/app/src/main/assets/data
 
-      - name: Build optimized ARM64 release APK
+      - name: Build optimized Android release APK
         working-directory: android-project
         shell: bash
         env:
+          ABI: ${{ inputs.abi || 'arm64-v8a' }}
           ORG_GRADLE_PROJECT_androidVersionName: ${{ steps.release.outputs.version-name }}
           ORG_GRADLE_PROJECT_androidVersionCode: ${{ steps.release.outputs.version-code }}
           # Publishing repo as the in-app downloader's default base URL
@@ -258,23 +269,24 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace :app:assembleRelease -Parm64-v8a
+          ./gradlew --no-daemon --stacktrace :app:assembleRelease "-P$ABI"
 
       - name: Verify and package the APK
         id: package
         shell: bash
         env:
+          ABI: ${{ inputs.abi || 'arm64-v8a' }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           SIGNING_MODE: ${{ steps.signing.outputs.mode }}
         run: |
           set -euo pipefail
-          source_apk='android-project/app/build/outputs/apk/release/krkrsdl2_arm64-v8a.apk'
+          source_apk="android-project/app/build/outputs/apk/release/krkrsdl2_${ABI}.apk"
           if [[ ! -f "$source_apk" ]]; then
             echo "Release APK is missing: $source_apk" >&2
             exit 1
           fi
 
-          package_name="Yosuga-no-Sora-HD-Remake-Android-arm64-$RELEASE_TAG.apk"
+          package_name="Yosuga-no-Sora-HD-Remake-Android-${ABI}-$RELEASE_TAG.apk"
           asset_dir="$RUNNER_TEMP/release-assets"
           mkdir -p "$asset_dir"
           cp "$source_apk" "$asset_dir/$package_name"
@@ -288,8 +300,8 @@ jobs:
           [[ "$package_info" == *"versionName='${{ steps.release.outputs.version-name }}'"* ]]
           mapfile -t packaged_abis < <(unzip -Z1 "$asset_dir/$package_name" | \
             sed -n 's#^lib/\([^/]*\)/.*#\1#p' | sort -u)
-          if [[ "${#packaged_abis[@]}" -ne 1 || "${packaged_abis[0]}" != 'arm64-v8a' ]]; then
-            printf 'Unexpected APK ABIs: %s\n' "${packaged_abis[*]}" >&2
+          if [[ "${#packaged_abis[@]}" -ne 1 || "${packaged_abis[0]}" != "$ABI" ]]; then
+            printf 'Unexpected APK ABIs: %s (expected %s)\n' "${packaged_abis[*]}" "$ABI" >&2
             exit 1
           fi
 
@@ -298,11 +310,11 @@ jobs:
           apk_sha256="$(sha256sum "$asset_dir/$package_name" | cut -d' ' -f1)"
           cat > "$asset_dir/$package_name-BUILD-INFO.txt" <<EOF
           Yosuga no Sora: HD Remake
-          Runtime: Android Kirikiri SDL2 (ARM64)
+          Runtime: Android Kirikiri SDL2 ($ABI)
           Release: $RELEASE_TAG
           Commit: $GITHUB_SHA
           Signing: $SIGNING_MODE
-          Native optimization: RelWithDebInfo -O3, NDEBUG, ARM64 NEON with fallback
+          Native optimization: RelWithDebInfo -O3, NDEBUG
           SHA-256: $apk_sha256  $package_name
           EOF
 
