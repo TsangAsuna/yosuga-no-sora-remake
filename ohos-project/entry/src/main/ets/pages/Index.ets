@@ -97,6 +97,16 @@ struct Index {
   @State bootState: number = 0;
   @State progressText: string = '';
   @State progressValue: number = 0;
+  /* Fitted 16:9 canvas size in vp (HarmonyOS PC screens are mostly 3:2).
+   * Recomputed from the ROOT stack size (always 100% x 100% of the window)
+   * in its onAreaChange - one single driver for every page. Earlier
+   * attempts failed: a self-referencing onAreaChange on the fitted canvas
+   * locked the size at its initial value, and a sizeless component with
+   * only aspectRatio + constraintSize collapsed (its absolutely positioned
+   * percentage children provide no measurement basis), which misplaced all
+   * bootstrap buttons. */
+  @State gameW: number = 1280;
+  @State gameH: number = 720;
   /* Last value of pollFullscreen written to the diag log, so the 10 Hz poll
    * only logs when the request actually changes. */
   private lastFsLog: number = -99;
@@ -1059,6 +1069,18 @@ struct Index {
     let doneBytes = 0;
     const totalBytes = this.assets.reduce((sum, asset) => sum + asset.size, 0);
     const startTime = Date.now();
+    // Peak storage = archives + the extracted copy living side by side.
+    // Check BEFORE pulling gigabytes so a small data partition fails fast
+    // with a readable message instead of dying mid-pack (13900025).
+    const spaceErr = await this.checkFreeSpace(this.sandboxFiles,
+      totalBytes * 2 + 512 * 1024 * 1024);
+    if (spaceErr !== '') {
+      this.message = spaceErr;
+      this.bootState = 2;
+      this.uiEpoch++;
+      await this.showNotice('存储空间不足', spaceErr);
+      return;
+    }
     // All downloaded zips extract into ONE sandbox staging dir
     // (decompressFile requires sandbox paths); installUnzipped moves the
     // result to the public data folder afterwards.
@@ -1156,7 +1178,9 @@ struct Index {
         this.progressValue = 0;
         this.bootState = 2;
         this.uiEpoch++;
-        this.message = '下载失败：' + asset.name + '（' + JSON.stringify(e) + '）\n' +
+        const fsReason = this.describeFsError(e);
+        this.message = '下载失败：' + asset.name + '（' +
+          (fsReason !== '' ? fsReason + ' ' : '') + JSON.stringify(e) + '）\n' +
           '若为网络问题，请返回引导页点击「gh-proxy」或「我的代理」切换加速后再下载';
         return;
       }
@@ -1238,6 +1262,53 @@ struct Index {
         }
       });
     });
+  }
+
+  /** Pre-flight free-space probe. The full download+extract pipeline needs
+   * roughly twice the archive total at peak (a finished zip is extracted
+   * into the staging dir and then deleted, but both exist side by side
+   * meanwhile). Emulators and small tablets ship tiny data partitions - the
+   * observed failure was a download dying mid-pack with 13900025 once the
+   * 6GB emulator data disk filled up. Fail BEFORE pulling gigabytes, with
+   * a readable message. Returns '' when there is enough room, otherwise a
+   * user-facing error string. */
+  private async checkFreeSpace(path: string, needBytes: number): Promise<string> {
+    try {
+      const st = await fs.statfs(path);
+      const freeBytes = st.bavail * st.bsize;
+      this.log('free space at ' + path + ': ' + this.fmtSize(freeBytes) +
+        ' avail, need ' + this.fmtSize(needBytes));
+      if (freeBytes < needBytes) {
+        try {
+          entryNapi.diagLog('shell: LOW SPACE ' + this.fmtSize(freeBytes) +
+            ' free, need ' + this.fmtSize(needBytes));
+        } catch (eDg) {
+          // diag channel not ready
+        }
+        return '设备剩余空间仅 ' + this.fmtSize(freeBytes) + '，而完整下载并解压需要约 ' +
+          this.fmtSize(needBytes) + '，请清理空间后重试（模拟器请在设备管理器把数据分区调大）';
+      }
+    } catch (e) {
+      // statfs unavailable on this path - never block the download on it
+      this.log('statfs probe failed: ' + JSON.stringify(e));
+    }
+    return '';
+  }
+
+  /** Map common fs error codes from the write path to readable text
+   * (returns '' when the error is not a recognised fs code). */
+  private describeFsError(e: Error): string {
+    const t = JSON.stringify(e);
+    if (t.indexOf('13900025') >= 0 || t.indexOf('13900028') >= 0) {
+      return '写入失败：磁盘空间不足';
+    }
+    if (t.indexOf('13900013') >= 0 || t.indexOf('13900001') >= 0) {
+      return '写入失败：没有访问权限';
+    }
+    if (t.indexOf('13900002') >= 0) {
+      return '写入失败：目标目录不存在';
+    }
+    return '';
   }
 
   async downloadFile(url: string, dest: string, totalSize: number,
@@ -2552,6 +2623,23 @@ struct Index {
     this.hoverProxy = isHover ? proxy : (this.hoverProxy === proxy ? 0 : this.hoverProxy);
   }
 
+  /* Fit the largest 16:9 rectangle inside the given WINDOW size and store
+   * it as the shared game/bootstrap canvas. Only ever called from the root
+   * stack's onAreaChange (which is always 100% x 100% of the window), never
+   * from a fitted component itself. */
+  private fitGameCanvas(stageW: number, stageH: number): void {
+    if (stageW > 0 && stageH > 0) {
+      let gw: number = stageW;
+      let gh: number = stageW * 9 / 16;
+      if (gh > stageH) {
+        gh = stageH;
+        gw = stageH * 16 / 9;
+      }
+      this.gameW = Math.floor(gw);
+      this.gameH = Math.floor(gh);
+    }
+  }
+
   build() {
     Stack({ alignContent: Alignment.Center }) {
       // Title background image shipped inside the HAP (rawfile); only on
@@ -2620,12 +2708,10 @@ struct Index {
               }
             })
             // Strict 16:9 canvas fitted inside the window (letterboxed on
-            // the sides on 3:2 HarmonyOS PC / tablet screens instead of
-            // being stretched edge to edge). With no explicit width/height,
-            // aspectRatio makes ArkUI pick the largest 16:9 rectangle that
-            // fits the parent constraints - no manual size bookkeeping.
-            .aspectRatio(16 / 9)
-            .constraintSize({ maxWidth: '100%', maxHeight: '100%' })
+            // 3:2 HarmonyOS PC / tablet screens instead of being stretched
+            // edge to edge). Size driven by the root stack's onAreaChange.
+            .width(this.gameW)
+            .height(this.gameH)
             // Report the real component size to the engine: the native
             // OnSurfaceChanged callback never fires on this system, so
             // without this the SDL window size stays at the fallback and
@@ -2683,8 +2769,8 @@ struct Index {
               })
               // Same fitted 16:9 canvas as the game surface (16:9 movies
               // then exactly cover the game picture).
-              .aspectRatio(16 / 9)
-              .constraintSize({ maxWidth: '100%', maxHeight: '100%' })
+              .width(this.gameW)
+              .height(this.gameH)
               .zIndex(3)
             }
             // No .onTouch here: libace_compatible crashes the UI thread while
@@ -2697,8 +2783,8 @@ struct Index {
           Column()
             // Same fitted 16:9 canvas as the XComponent so overlay vp coords
             // map directly onto the SDL window coordinate space.
-            .aspectRatio(16 / 9)
-            .constraintSize({ maxWidth: '100%', maxHeight: '100%' })
+            .width(this.gameW)
+            .height(this.gameH)
             .backgroundColor('#00000000')
             .zIndex(4)
             .onTouch((event: TouchEvent) => {
@@ -2893,11 +2979,10 @@ struct Index {
               this.importLocal();
             })
         }
-        // Fitted 16:9 canvas (largest 16:9 rectangle inside the window); no
-        // black background here - the bootstrap artwork must stay visible
-        // around/through it.
-        .aspectRatio(16 / 9)
-        .constraintSize({ maxWidth: '100%', maxHeight: '100%' })
+        // Fitted 16:9 canvas, sized by the root stack (transparent so the
+        // bootstrap artwork stays visible around it).
+        .width(this.gameW)
+        .height(this.gameH)
       } else if (this.bootState === 3 || this.bootState === 4 || this.bootState === 7) {
         // Keep the same artwork during download/import and overlay the live
         // progress control on the supplied center track. This makes the
@@ -2977,9 +3062,9 @@ struct Index {
             .fontSize(18).fontColor(Color.White).maxLines(3)
             .textAlign(TextAlign.Center)
         }
-        // Fitted 16:9 canvas (same rule as the setup page).
-        .aspectRatio(16 / 9)
-        .constraintSize({ maxWidth: '100%', maxHeight: '100%' })
+        // Fitted 16:9 canvas, sized by the root stack (same rule).
+        .width(this.gameW)
+        .height(this.gameH)
       } else {
         Column({ space: 14 }) {
           Text('需要授权').fontSize(18).fontColor(Color.White)
@@ -3001,6 +3086,13 @@ struct Index {
     .key('boot-' + this.bootState + '-' + this.uiEpoch)
     .width('100%')
     .height('100%')
+    // Single driver for the fitted 16:9 canvas: this root stack always
+    // spans the whole window, so its area IS the window size (fixes both
+    // the self-referencing lock at 1280x720 and the collapsed canvas that
+    // misplaced the bootstrap buttons).
+    .onAreaChange((oldRoot: Area, newRoot: Area) => {
+      this.fitGameCanvas(newRoot.width as number, newRoot.height as number);
+    })
     .backgroundColor('#000000')
     .expandSafeArea([SafeAreaType.SYSTEM])
     .focusable(true)
