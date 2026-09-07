@@ -85,8 +85,10 @@ public class BootstrapActivity extends Activity {
     private static final String[][] DEFAULT_NODES = {
         {"GitHub 直链", ""},
         {"GH-PROXY.CN", "https://gh-proxy.cn/"},
-        {"GH-PROXY.COM", "https://gh-proxy.com/"},
-        {"GHPROXY.NET", "https://ghproxy.net/"},
+        {"GH-PROXY.ORG", "https://gh-proxy.org/"},
+        {"CDN.GH-PROXY.ORG", "https://cdn.gh-proxy.org/"},
+        {"AXISNOW.GH-PROXY.ORG", "https://axisnow.gh-proxy.org/"},
+        {"V6.GH-PROXY.ORG", "https://v6.gh-proxy.org/"},
         {"CRAFT-HELLO", "https://proxy.craft-hello.top/proxy/"}
     };
     // Live node list; starts as the built-in fallback and is replaced by the
