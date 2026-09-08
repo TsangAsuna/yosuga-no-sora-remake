@@ -100,7 +100,7 @@ public class BootstrapActivity extends Activity {
     private static final int ACTION_DOWNLOAD = 1;
     private static final int ACTION_IMPORT = 2;
     private static final String FALLBACK_BASE_URL =
-            "https://github.com/shuimo0413/yosuga-no-sora-remake/releases/download/data-v3/";
+            "https://github.com/TsangAsuna/yosuga-no-sora-remake/releases/download/data-v1/";
 
     /** Keeps the bootstrap artwork and its hit regions in one fixed canvas. */
     private static final class FixedAspectLayout extends FrameLayout {
