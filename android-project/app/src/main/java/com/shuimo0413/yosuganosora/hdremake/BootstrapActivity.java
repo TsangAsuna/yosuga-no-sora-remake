@@ -180,9 +180,6 @@ public class BootstrapActivity extends Activity {
     // fights the still-running first one over the same files and the UI.
     private static volatile boolean busy = false;
     private int selectedProxy = PROXY_DIRECT;
-    // Picked GH-PROXY node: survives across downloads; cleared only on
-    // app restart (memory) or when a download is interrupted.
-    private String cachedGhNode = "";
     private static volatile int activeAction = ACTION_NONE;
     // Pointer-hover highlight (mouse / trackpad): mirrors pressed state so
     // hovering a button shows its active artwork without pressing.
@@ -489,10 +486,7 @@ public class BootstrapActivity extends Activity {
         // it active; tapping another item switches the selection atomically.
         selectedProxy = proxy;
         if (selectedProxy == PROXY_GH) {
-            // Select only; the actual node pick happens when the user taps
-            // 开始下载 (startDownload). The cached node is reused across
-            // downloads and only re-picked on restart or an interrupted run.
-            proxyInput.setText("");
+            proxyInput.setText("https://gh-proxy.cn/");
             updateProxyArtwork();
         } else if (selectedProxy == PROXY_CRAFT) {
             proxyInput.setText("https://proxy.craft-hello.top/proxy/");
@@ -757,24 +751,12 @@ public class BootstrapActivity extends Activity {
     // ---- download -----------------------------------------------------------
     private void startDownload() {
         if (busy) return;
-        if (selectedProxy == PROXY_GH && !"".equals(cachedGhNode)) {
-            // Reuse the previously picked node (unless app restart or an
-            // interrupted download cleared it).
-            proxyInput.setText(cachedGhNode);
-        }
         activeAction = ACTION_DOWNLOAD;
         setBusy(true);
         setMessage("");
         setProgress("正在获取下载清单…", 0);
         new Thread(() -> {
             try {
-                if (selectedProxy == PROXY_GH && "".equals(cachedGhNode)) {
-                    runOnUi(() -> setMessage("正在优选加速节点…"));
-                    pickGhNode();
-                    // pickGhNode set cachedGhNode + proxyInput; an empty
-                    // result means no reachable node -> fall through and
-                    // the manifest fetch will fail with a clear message.
-                }
                 List<String[]> assets = loadManifest();
                 if (assets.isEmpty()) {
                     fail("无法读取下载清单（data-assets.json），请检查网络后重试");
@@ -874,7 +856,6 @@ public class BootstrapActivity extends Activity {
                 }
             } catch (Exception e) {
                 Log.e(TAG, "download failed", e);
-                cachedGhNode = "";
                 fail("下载失败：" + e.getMessage());
             } finally {
                 setBusy(false);
@@ -957,62 +938,6 @@ public class BootstrapActivity extends Activity {
             // the next 10 minutes go straight to FALLBACK_BASE_URL.
             sLatestUpstreamAt = now;
             return null;
-        }
-    }
-
-    /** Probes every accelerator node in parallel against the real manifest
-     *  URL and stores the fastest reachable one in cachedGhNode. Serial
-     *  probing could take ~50s (6 nodes x 8.5s worst case) and looks like
-     *  a freeze, so probes run concurrently: total time ~= slowest node. */
-    private void pickGhNode() {
-        String target = null;
-        try {
-            target = resolveBaseUrl() + "data-assets.json";
-        } catch (Exception ignored) {
-        }
-        final String probeTarget = target;
-        final int n = ACCEL_NODES.length;
-        final long[] lats = new long[n];
-        java.util.Arrays.fill(lats, -1);
-        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(n);
-        for (int i = 0; i < n; i++) {
-            final int idx = i;
-            final String prefix = ACCEL_NODES[idx][1];
-            if (prefix.isEmpty()) { latch.countDown(); continue; }
-            Thread th = new Thread(() -> {
-                try {
-                    long ms = probeOnce(prefix + probeTarget, systemProxy(), 2500);
-                    if (ms < 0) ms = probeOnce(prefix + probeTarget, java.net.Proxy.NO_PROXY, 6000);
-                    lats[idx] = ms;
-                } catch (Exception ignored) {
-                } finally {
-                    latch.countDown();
-                }
-            });
-            th.start();
-        }
-        try {
-            latch.await(15, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-        }
-        long bestMs = Long.MAX_VALUE;
-        int bestIdx = -1;
-        for (int i = 0; i < n; i++) {
-            if (lats[i] >= 0 && lats[i] < bestMs) {
-                bestMs = lats[i];
-                bestIdx = i;
-            }
-        }
-        if (bestIdx >= 0) {
-            cachedGhNode = ACCEL_NODES[bestIdx][1];
-            proxyInput.setText(cachedGhNode);
-            final String name = ACCEL_NODES[bestIdx][0];
-            final long ms = bestMs;
-            runOnUi(() -> setMessage("已连接 " + name + "（" + ms + " ms）"));
-        } else {
-            cachedGhNode = "";
-            runOnUi(() -> setMessage("未找到可达的加速节点，已切换直连"));
         }
     }
 
