@@ -616,8 +616,27 @@ function RemoveFavoriteVoice(voicePath)
 	}
 	if(!removed) return false;
 
-	// Persist list first. Local list mutation is not durable until Save succeeds.
-	if(!SaveFavoriteVoices(list)) return false;
+		// Empty favorites list: delete the slot files instead of saving an
+		// empty array. saveStruct/evalStorage round-trip of an empty array
+		// can lose .count, which makes SaveFavoriteVoiceState's verification
+		// fail and the UI reports "取消收藏失败" even though the item was
+		// removed in memory.
+		if(list.count == 0)
+		{
+			TryDeleteStoragePath(VOICE_FAVORITES_SLOT_A_FILE);
+			TryDeleteStoragePath(VOICE_FAVORITES_SLOT_B_FILE);
+			TryDeleteStoragePath(VOICE_FAVORITES_FILE);
+			var deletesOkEmpty = true;
+			for(i = 0; i < removedSaveFiles.count; i++)
+			{
+				if(!DeleteFavoriteVoiceSaveFile(removedSaveFiles[i]))
+					deletesOkEmpty = false;
+			}
+			return deletesOkEmpty;
+		}
+
+		// Persist list first. Local list mutation is not durable until Save succeeds.
+		if(!SaveFavoriteVoices(list)) return false;
 
 	var deletesOk = true;
 	for(i = 0; i < removedSaveFiles.count; i++)
