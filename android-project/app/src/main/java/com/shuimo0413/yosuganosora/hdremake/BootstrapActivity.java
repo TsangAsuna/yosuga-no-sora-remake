@@ -954,39 +954,13 @@ public class BootstrapActivity extends Activity {
         return base;
     }
 
-    /** Auto-picks the fastest reachable accelerator prefix when the user has
-     * not typed/selected one manually. There are only two accelerator
-     * channels: GH (gh-proxy.cn) and CRAFT-HELLO (proxy.craft-hello.top) -
-     * no dynamic multi-node list. The download still only starts from the
-     * button; this only converts the plain upstream URL into an accelerated
-     * one. Returns "" when neither is reachable (fall back to direct). */
-    private String autoAccelerator() {
-        String manual = proxyInput.getText().toString().trim();
-        if (!manual.isEmpty()) return manual;
-        // A custom base URL is the final source: never stack a prefix on it.
-        boolean customBase = !baseUrlInput.getText().toString().trim().isEmpty();
-        if (customBase) return "";
-        long bestRtt = Long.MAX_VALUE;
-        String best = "";
-        for (String prefix : new String[]{
-                "https://gh-proxy.cn/",
-                "https://proxy.craft-hello.top/proxy/"}) {
-            long rtt = pingNodeLatency(prefix);
-            if (rtt >= 0 && rtt < bestRtt) {
-                bestRtt = rtt;
-                best = prefix;
-            }
-        }
-        return best;
-    }
-
     /** Returns [name, sha256, size, url] tuples. The accelerator proxy
      * prefix (when set) is prepended to every asset URL, mirroring the
      * OHOS downloader. */
     private List<String[]> loadManifest() throws Exception {
         List<String[]> out = new ArrayList<>();
         String base = resolveBaseUrl();
-        final String proxy = autoAccelerator();
+        final String proxy = proxyInput.getText().toString().trim();
         // A custom base URL is the final source (direct or mirror): never
         // stack the accelerator prefix on top of it.
         boolean customBase = !baseUrlInput.getText().toString().trim().isEmpty();
