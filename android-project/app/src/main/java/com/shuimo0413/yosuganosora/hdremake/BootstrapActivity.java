@@ -1004,7 +1004,7 @@ public class BootstrapActivity extends Activity {
         // OHOS build: throughput comes from parallelism. Each worker writes
         // its chunk at the exact offset via FileChannel.positional write,
         // so retries stay resume-safe and SHA-256 guards the result.
-        final int threads = 6;
+        final int threads = 32;
         final long chunk = 8L * 1024 * 1024;
         final long nChunks = (size + chunk - 1) / chunk;
         final AtomicLong doneSum = new AtomicLong(0);
@@ -1102,7 +1102,12 @@ public class BootstrapActivity extends Activity {
                                 conn = (HttpURLConnection) new URL(urlStr)
                                         .openConnection(systemProxy());
                                 conn.setConnectTimeout(20000);
-                                conn.setReadTimeout(60000);
+                                // 20s read budget per chunk: a slow/broken
+                                // mirror stalls all 6 workers and the progress
+                                // bar freezes with buttons disabled (looks like
+                                // the app hung). Failing fast lets the user
+                                // switch source instead of waiting 60s.
+                                conn.setReadTimeout(20000);
                                 conn.setRequestProperty("User-Agent", "YosugaSoraHD/1.0");
                                 conn.setRequestProperty("Range",
                                         "bytes=" + start + "-" + end);
