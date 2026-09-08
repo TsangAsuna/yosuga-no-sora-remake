@@ -1877,7 +1877,7 @@ public class BootstrapActivity extends Activity {
                 ensureNoMedia(saveDir);
                 File[] kids = parent.listFiles();
                 if (kids != null) {
-                    Pattern rec = Pattern.compile("data-assets-(\d+)\.json");
+                    Pattern rec = Pattern.compile("data-assets-(\\d+)\\.json");
                     for (File f : kids) {
                         String n = f.getName();
                         if (n.equals("data-assets.json") || rec.matcher(n).matches()) {
