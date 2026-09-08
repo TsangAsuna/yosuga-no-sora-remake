@@ -2593,8 +2593,17 @@ void TVPWindowWindow::SetDrawDeviceDestRect(void)
 {
 #ifdef KRKRSDL2_ENABLE_ZOOM
 	tTVPRect destrect;
-	tjs_int w = MulDiv(this->GetInnerWidth(),  this->ActualZoomNumer, this->ActualZoomDenom);
-	tjs_int h = MulDiv(this->GetInnerHeight(), this->ActualZoomNumer, this->ActualZoomDenom);
+	// MulDiv truncates toward zero: when the zoom factor does not divide
+	// evenly the destination rect comes out 1px short on the bottom,
+	// leaving the engine's cleared background visible as a thin line
+	// under the game frame (title/menu layers that cover the full screen
+	// especially, until a scene change forces a relayout and the taller
+	// rect re-sent). Round UP instead so the frame always covers the
+	// full viewport.
+	tjs_int w = (tjs_int)(((int64_t)this->GetInnerWidth()  * (int64_t)this->ActualZoomNumer
+		+ this->ActualZoomDenom - 1) / this->ActualZoomDenom);
+	tjs_int h = (tjs_int)(((int64_t)this->GetInnerHeight() * (int64_t)this->ActualZoomNumer
+		+ this->ActualZoomDenom - 1) / this->ActualZoomDenom);
 	if (w < 1)
 	{
 		w = 1;
