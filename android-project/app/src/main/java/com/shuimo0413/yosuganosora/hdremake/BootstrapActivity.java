@@ -100,7 +100,7 @@ public class BootstrapActivity extends Activity {
     private static final int ACTION_DOWNLOAD = 1;
     private static final int ACTION_IMPORT = 2;
     private static final String FALLBACK_BASE_URL =
-            "https://github.com/TsangAsuna/yosuga-no-sora-remake/releases/download/v1.0.8/";
+            "https://github.com/shuimo0413/yosuga-no-sora-remake/releases/download/data-v3/";
 
     /** Keeps the bootstrap artwork and its hit regions in one fixed canvas. */
     private static final class FixedAspectLayout extends FrameLayout {
@@ -954,13 +954,39 @@ public class BootstrapActivity extends Activity {
         return base;
     }
 
+    /** Auto-picks the fastest reachable accelerator prefix when the user has
+     * not typed/selected one manually. There are only two accelerator
+     * channels: GH (gh-proxy.cn) and CRAFT-HELLO (proxy.craft-hello.top) -
+     * no dynamic multi-node list. The download still only starts from the
+     * button; this only converts the plain upstream URL into an accelerated
+     * one. Returns "" when neither is reachable (fall back to direct). */
+    private String autoAccelerator() {
+        String manual = proxyInput.getText().toString().trim();
+        if (!manual.isEmpty()) return manual;
+        // A custom base URL is the final source: never stack a prefix on it.
+        boolean customBase = !baseUrlInput.getText().toString().trim().isEmpty();
+        if (customBase) return "";
+        long bestRtt = Long.MAX_VALUE;
+        String best = "";
+        for (String prefix : new String[]{
+                "https://gh-proxy.cn/",
+                "https://proxy.craft-hello.top/proxy/"}) {
+            long rtt = pingNodeLatency(prefix);
+            if (rtt >= 0 && rtt < bestRtt) {
+                bestRtt = rtt;
+                best = prefix;
+            }
+        }
+        return best;
+    }
+
     /** Returns [name, sha256, size, url] tuples. The accelerator proxy
      * prefix (when set) is prepended to every asset URL, mirroring the
      * OHOS downloader. */
     private List<String[]> loadManifest() throws Exception {
         List<String[]> out = new ArrayList<>();
         String base = resolveBaseUrl();
-        final String proxy = proxyInput.getText().toString().trim();
+        final String proxy = autoAccelerator();
         // A custom base URL is the final source (direct or mirror): never
         // stack the accelerator prefix on top of it.
         boolean customBase = !baseUrlInput.getText().toString().trim().isEmpty();
@@ -1831,6 +1857,36 @@ public class BootstrapActivity extends Activity {
     }
 
     private void markConfirmed() {
+        // The import-progress records (data-assets-<N>.json) have done their
+        // job once the dataset is complete: drop them (and any leftover
+        // in-pack manifest) so a re-import after an app UPDATE is not
+        // rejected with "第 N 个压缩包已导入过" - the records survive an
+        // update install because the app data folder is preserved.
+        try {
+            File parent = chooseDataParent();
+            if (parent != null) {
+                // Media-scan exclusion: game assets and saves must never be
+                // published into the system gallery. The save folder is
+                // created on demand so the marker exists before the first
+                // save (the engine writes its own marker on later boots).
+                File dataTree = new File(parent, "data");
+                if (!dataTree.isDirectory()) dataTree.mkdirs();
+                ensureNoMedia(dataTree);
+                File saveDir = new File(downloadRoot(), "savedata");
+                if (!saveDir.isDirectory()) saveDir.mkdirs();
+                ensureNoMedia(saveDir);
+                File[] kids = parent.listFiles();
+                if (kids != null) {
+                    Pattern rec = Pattern.compile("data-assets-(\d+)\.json");
+                    for (File f : kids) {
+                        String n = f.getName();
+                        if (n.equals("data-assets.json") || rec.matcher(n).matches()) {
+                            f.delete();
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
         try {
             getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                     .putInt(KEY_CONFIRMED_VERSION, getVersionCode()).apply();

@@ -76,7 +76,7 @@ jobs:
           # UPSTREAM repository -- a fork has no data-vN release of its own
           # yet, so the auto-pick would fail. Revert to the auto-pick line
           # below once this repository has published its own data-vN.
-          python3 tools/fetch_data_parts.py --repo shuimo0413/yosuga-no-sora-remake --dest data
+          python3 tools/fetch_data_parts.py --repo shuimo0413/yosuga-no-sora-remake --tag v1.0.5 --dest data
           # Original auto-pick (restore before publishing data-v(N+1) here):
           # python3 tools/fetch_data_parts.py --dest data
       # Overlay gameplay patches on top of the source data so releases ship

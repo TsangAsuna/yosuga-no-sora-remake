@@ -82,10 +82,13 @@ static NSString *StagingPath(void)
 
 static BOOL GameDataReady(void)
 {
+    /* Same rule as Android / OHOS: the presence of data/startup.tjs alone
+     * means the dataset is launchable. The extra .complete marker (written
+     * only by the in-app download/import flow) used to block manually
+     * placed data from ever auto-starting the game. */
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *startup = [DataDirPath() stringByAppendingPathComponent:@"startup.tjs"];
-    NSString *marker = [DataRootPath() stringByAppendingPathComponent:@".complete"];
-    return [fm fileExistsAtPath:startup] && [fm fileExistsAtPath:marker];
+    return [fm fileExistsAtPath:startup];
 }
 
 /* Append a diagnostic line to Documents/<bundle>/bootstrap.log so a crash
@@ -431,7 +434,7 @@ static NSString *HexString(const unsigned char *bytes, size_t len)
                 return baseUrl;
         }
     }
-    return @"https://github.com/TsangAsuna/yosuga-no-sora-remake/releases/download/v1.0.8/";
+    return @"https://github.com/shuimo0413/yosuga-no-sora-remake/releases/download/data-v3/";
 }
 
 - (NSString *)effectiveBaseUrl
@@ -1544,8 +1547,53 @@ static int ExtractProgressCb(void *ctx, int done, int total, const char *nameUtf
     }];
 }
 
+static void EnsureNoMediaAll(void)
+{
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *root = DataRootPath();
+    if (!root) return;
+    NSString *dataDir = [root stringByAppendingPathComponent:@"data"];
+    NSString *saveDir = [root stringByAppendingPathComponent:@"savedata"];
+    if (![fm fileExistsAtPath:saveDir])
+    {
+        [fm createDirectoryAtPath:saveDir
+            withIntermediateDirectories:YES attributes:nil error:nil];
+    }
+    for (NSString *dir in [NSArray arrayWithObjects:root, dataDir, saveDir,
+                           nil])
+    {
+        BOOL isDir = NO;
+        if (![fm fileExistsAtPath:dir isDirectory:&isDir] || !isDir)
+            continue;
+        NSString *marker = [dir stringByAppendingPathComponent:@".nomedia"];
+        if (![fm fileExistsAtPath:marker])
+            [fm createFileAtPath:marker contents:[NSData data] attributes:nil];
+    }
+}
+
 - (void)dataInstalled
 {
+    /* The import-progress records (data-assets-<N>.json) have done their
+     * job once the dataset is complete: drop them (and any leftover
+     * in-pack manifest) so a re-import after an app UPDATE is not rejected
+     * with "already imported" - the records survive an update install
+     * because the app data folder is preserved. */
+    {
+        NSError *cleanupErr = nil;
+        NSArray *items = [[NSFileManager defaultManager]
+            contentsOfDirectoryAtPath:DataRootPath() error:&cleanupErr];
+        for (NSString *name in items)
+        {
+            if ([name isEqualToString:@"data-assets.json"] ||
+                ([name hasPrefix:@"data-assets-"] && [name hasSuffix:@".json"]))
+            {
+                [[NSFileManager defaultManager] removeItemAtPath:
+                    [DataRootPath() stringByAppendingPathComponent:name]
+                              error:nil];
+            }
+        }
+    }
+    EnsureNoMediaAll();
     MarkDataComplete();
     IosLog(@"data installed, engine starting");
     [self setMessage:@""];
@@ -1779,7 +1827,10 @@ int krkrsdl2_ios_run_bootstrap(void)
         }
         IosLog(@"bootstrap start");
         if (GameDataReady())
+        {
+            EnsureNoMediaAll();
             return 1;
+        }
         IosLog(@"showing bootstrap UI");
 
         TVPIOSBootstrapVC *vc = [[TVPIOSBootstrapVC alloc] init];
