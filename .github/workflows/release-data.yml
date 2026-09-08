@@ -94,12 +94,20 @@ jobs:
       # Version follows the release tag (shared with every platform):
       # stamped into status.tjs before the manifest, so the content
       # manifest records the hash of the file that actually ships.
+      # Data-only releases (data-vN) carry no platform version: the
+      # version comes from whatever app consumes the pack, so keep the
+      # status.tjs GAME_VERSION at the upstream value (data tag does not
+      # parse as a numeric version, so skip the injection for them).
       - name: Inject the game version into status.tjs
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.meta.outputs.tag }}
         run: |
           set -euo pipefail
+          if [[ "$RELEASE_TAG" =~ ^data-v[0-9]+$ ]]; then
+            echo "data release $RELEASE_TAG: skipping version injection"
+            exit 0
+          fi
           python3 tools/inject_game_version.py \
             --tag "$RELEASE_TAG" \
             --status data/system/Status.tjs
