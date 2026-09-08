@@ -434,7 +434,7 @@ static NSString *HexString(const unsigned char *bytes, size_t len)
                 return baseUrl;
         }
     }
-    return @"https://github.com/shuimo0413/yosuga-no-sora-remake/releases/download/data-v3/";
+    return @"https://github.com/TsangAsuna/yosuga-no-sora-remake/releases/download/data-v1/";
 }
 
 - (NSString *)effectiveBaseUrl
